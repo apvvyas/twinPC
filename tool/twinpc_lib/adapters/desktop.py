@@ -1,20 +1,23 @@
 """Desktops: keyboard shortcuts (main PC) and remote-desktop / GUI-control tools (twin)."""
 import shlex
+from pathlib import Path
 
-from ..steps import cmd_step
+from ..steps import cmd_step, file_step, manual_step
 from .packages import pkg_step
 
 GSETTINGS = "G=$(command -v /usr/bin/gsettings || command -v gsettings)"   # prefer the distro's: a Nix one writes a keyfile GNOME never reads
 KEYS = "org.gnome.settings-daemon.plugins.media-keys"
+# python snippet: append argv[2] to the GVariant string list in argv[1] (a gsettings value), print it
+_APPEND = ("import ast,sys; l=ast.literal_eval(sys.argv[1].replace('@as ','')); "
+           "l.append(sys.argv[2]) if sys.argv[2] not in l else None; print(l)")
+CLIP_EXTENSION = "twinpc-clipboard@twinpc"
 
 
 class Gnome:
     def shortcut_steps(self, feature, key, name, binding, command):
         path = f"/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/{key}/"
-        add = ("import ast,sys; l=ast.literal_eval(sys.argv[1].replace('@as ','')); "
-               "l.append(sys.argv[2]) if sys.argv[2] not in l else None; print(l)")
         apply = (f"{GSETTINGS}; list=$($G get {KEYS} custom-keybindings)\n"
-                 f"new=$(python3 -c {shlex.quote(add)} \"$list\" {shlex.quote(path)})\n"
+                 f"new=$(python3 -c {shlex.quote(_APPEND)} \"$list\" {shlex.quote(path)})\n"
                  f"$G set {KEYS} custom-keybindings \"$new\"\n"
                  f"S={KEYS}.custom-keybinding:{path}\n"
                  f"$G set \"$S\" name {shlex.quote(name)} && $G set \"$S\" command {shlex.quote(command)}"
@@ -22,8 +25,34 @@ class Gnome:
         check = f"{GSETTINGS}; $G get {KEYS} custom-keybindings | grep -qF {shlex.quote(path)}"
         return [cmd_step(f"{feature}.main.shortcut", feature, "main", f"bind {binding} to `{command}`", check, apply)]
 
+    def clipboard_main_steps(self, feature, repo):
+        src = Path(repo) / "clip" / "gnome-extension" / CLIP_EXTENSION
+        where = f"$HOME/.local/share/gnome-shell/extensions/{CLIP_EXTENSION}"
+        return [
+            file_step(f"{feature}.main.extension-code", feature, "main", f"{where}/extension.js",
+                      (src / "extension.js").read_text()),
+            file_step(f"{feature}.main.extension-metadata", feature, "main", f"{where}/metadata.json",
+                      (src / "metadata.json").read_text()),
+            cmd_step(f"{feature}.main.extension-enabled", feature, "main", "turn on the twinPC clipboard extension",
+                     check=f"{GSETTINGS}; $G get org.gnome.shell enabled-extensions | grep -qF {CLIP_EXTENSION}",
+                     apply=f"{GSETTINGS}; list=$($G get org.gnome.shell enabled-extensions)\n"
+                           f"$G set org.gnome.shell enabled-extensions"
+                           f" \"$(python3 -c {shlex.quote(_APPEND)} \"$list\" {CLIP_EXTENSION})\""),
+            # GNOME on Wayland loads new extensions only at login; the marker lives until logout
+            manual_step(f"{feature}.main.relogin", feature, "main", "load the clipboard extension",
+                        "GNOME loads new extensions at login: log out and back in once "
+                        "(finishing this install first is fine).",
+                        check=f"gnome-extensions info {CLIP_EXTENSION} 2>/dev/null | grep -q 'State: ACTIVE'"
+                              ' || [ -f "$XDG_RUNTIME_DIR/twinpc/relogin-noted" ]',
+                        after_confirm='mkdir -p "$XDG_RUNTIME_DIR/twinpc"'
+                                      ' && touch "$XDG_RUNTIME_DIR/twinpc/relogin-noted"'),
+        ]
+
 
 class Hyprland:
+    def clipboard_twin_steps(self, feature, repo):
+        return []          # Hyprland has data-control: `wl-paste --watch` works, the agent needs nothing more
+
     def remote_desktop_steps(self, feature, pk):
         return [pkg_step(feature, "twin", pk, ["wayvnc"])]
 

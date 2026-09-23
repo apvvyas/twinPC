@@ -9,6 +9,7 @@ wayvnc = { apt = "wayvnc", pacman = "wayvnc", dnf = "wayvnc" }
 wtype = { apt = "wtype", pacman = "wtype", dnf = "wtype" }
 ydotool = { apt = "ydotool", pacman = "ydotool", dnf = "ydotool" }
 grim = { apt = "grim", pacman = "grim", dnf = "grim" }
+wl-clipboard = { apt = "wl-clipboard", pacman = "wl-clipboard", dnf = "wl-clipboard" }
 docker = { apt = "docker.io", pacman = "docker", dnf = "moby-engine" }
 lan-mouse = { pacman = "lan-mouse" }
 ollama-rocm = { pacman = "ollama-rocm" }

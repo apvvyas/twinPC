@@ -294,6 +294,33 @@ def _kvm(profile, repo, v):
     ]
 
 
+def _clipboard(profile, repo, v):
+    md = _desktop_for(profile, "main", "clipboard_main_steps")
+    if isinstance(md, str):
+        return [unsupported_step("clipboard", "main", md)]
+    td = _desktop_for(profile, "twin", "clipboard_twin_steps")
+    if isinstance(td, str):
+        return [unsupported_step("clipboard", "twin", td)]
+    r = v["repo"]
+    return [
+        pkg_step("clipboard", "main", _pk(profile, "main"), ["wl-clipboard"]),
+        pkg_step("clipboard", "twin", _pk(profile, "twin"), ["wl-clipboard"]),
+        cmd_step("clipboard.main.command", "clipboard", "main", "install twin-clipd on this PC",
+                 check=f'[ "$(readlink ~/.local/bin/twin-clipd)" = "{r}/clip/twin-clipd" ]',
+                 apply=f'mkdir -p ~/.local/bin && ln -sf "{r}/clip/twin-clipd" ~/.local/bin/twin-clipd'),
+        file_step("clipboard.twin.agent", "clipboard", "twin", "$HOME/.local/bin/twin-clipd",
+                  _read(repo, "clip/twin-clipd"), mode="755", describe="install twin-clipd on the twin"),
+        file_step("clipboard.main.unit", "clipboard", "main", "$HOME/.config/systemd/user/twin-clip.service",
+                  repo_unit(repo, "main/twin-clip.service").replace(" --host twin\n", f" --host {v['host']}\n")),
+        unit_step("clipboard.main.service", "clipboard", "main", "twin-clip.service"),
+        *md.clipboard_main_steps("clipboard", repo),
+        *td.clipboard_twin_steps("clipboard", repo),
+        cmd_step("clipboard.main.link", "clipboard", "main", "connect the clipboard service to the twin",
+                 check="~/.local/bin/twin-clipd --selftest >/dev/null",
+                 apply="systemctl --user restart twin-clip.service && sleep 3 && ~/.local/bin/twin-clipd --selftest"),
+    ]
+
+
 def _audio(profile, repo, v):
     return [
         file_step("audio.main.unit", "audio", "main", "$HOME/.config/systemd/user/twin-audio.service",
@@ -355,8 +382,8 @@ def _nic_fix(profile, repo, v):
 
 
 BUILDERS = {"connection": _connection, "cli": _cli, "gpu-stack": _gpu_stack, "routing": _routing,
-            "mount": _mount, "power": _power, "unlock": _unlock, "kvm": _kvm, "audio": _audio,
-            "desktop": _desktop, "gui": _gui, "nic-fix": _nic_fix}
+            "mount": _mount, "power": _power, "unlock": _unlock, "kvm": _kvm, "clipboard": _clipboard,
+            "audio": _audio, "desktop": _desktop, "gui": _gui, "nic-fix": _nic_fix}
 FEATURES = list(BUILDERS)
 
 

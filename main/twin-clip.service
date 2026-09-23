@@ -1,0 +1,12 @@
+[Unit]
+Description=twinPC clipboard sharing with the twin PC (twin-clipd)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/twin-clipd --host twin
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
