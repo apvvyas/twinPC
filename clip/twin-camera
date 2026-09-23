@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""twin-camera — the main PC's camera as a webcam on the twin, only while the twin uses it (man twin: CAMERA).
+
+Main PC (default): a user service that keeps `ssh twin twin-camera --watch` open. When the twin reports
+that an app opened its webcam, it streams the camera's MJPEG into `ssh twin twin-camera --feed`, and it
+stops once the twin reports idle.
+Twin: --watch keeps a placeholder picture on the virtual webcam and reports readers; --feed decodes the
+stream into it.
+"""
+import argparse
+import hashlib
+import json
+import os
+import re
+import shlex
+import signal
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+TWIN_DEVICE = "/dev/video9"
+DEFAULTS = {"TWIN_CAMERA_SIZE": "1280x720", "TWIN_CAMERA_FPS": "30", "TWIN_CAMERA_DEVICE": "/dev/video0"}
+PATTERNS = {"TWIN_CAMERA_SIZE": r"\d{2,4}x\d{2,4}", "TWIN_CAMERA_FPS": r"\d{1,3}",
+            "TWIN_CAMERA_DEVICE": r"/dev/video\d+"}
+IDLE_AFTER = float(os.environ.get("TWIN_CAMERA_IDLE") or 5)    # seconds without readers before stopping
+POLL = float(os.environ.get("TWIN_CAMERA_POLL") or 1)          # seconds between reader counts
+RETRY = float(os.environ.get("TWIN_CAMERA_RETRY") or 10)       # seconds between ssh attempts
+BUSY_WITHIN = 2.0                                              # a capture that dies this fast couldn't open the camera
+
+
+def code_hash():
+    """A fingerprint of this program's file as it is on disk now."""
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+
+
+CODE = code_hash()                       # the code this process runs; --selftest --fresh compares the two
+
+
+def log(msg):
+    print(f"twin-camera: {msg}", file=sys.stderr, flush=True)
+
+
+def notify(msg):
+    try:
+        subprocess.run(["notify-send", "-a", "twinPC", "twinPC camera", msg], timeout=5,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def runtime_dir():
+    return Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "twinpc"
+
+
+def settings(config=None, env=None):
+    """Camera settings from ~/.config/twinpc/config (NAME=value lines) and the environment, validated."""
+    env = os.environ if env is None else env
+    if config is None:
+        config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "twinpc" / "config"
+    values = dict(DEFAULTS)
+    try:
+        for line in config.read_text().splitlines():
+            key, sep, value = line.strip().partition("=")
+            if sep and key in DEFAULTS:
+                values[key] = value.strip().strip("'\"")
+    except OSError:
+        pass
+    for key in DEFAULTS:
+        if env.get(key):
+            values[key] = env[key]
+    for key, pattern in PATTERNS.items():
+        if not re.fullmatch(pattern, values[key]):
+            raise ValueError(f"{key}={values[key]!r} is not valid")
+    return values
+
+
+def event(name, **fields):
+    return (json.dumps({"event": name, **fields}) + "\n").encode()
+
+
+def parse_event(line):
+    try:
+        h = json.loads(line)
+    except ValueError:
+        raise ValueError("not JSON") from None
+    if not isinstance(h, dict) or not isinstance(h.get("event"), str):
+        raise ValueError("not an event")
+    return h
+
+
+def readers(device, proc=Path("/proc"), exclude=()):
+    """The pids, other than `exclude`, that have `device` open."""
+    found = set()
+    for entry in proc.iterdir():
+        if not entry.name.isdigit() or int(entry.name) in exclude:
+            continue
+        try:
+            fds = list((entry / "fd").iterdir())
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                if os.readlink(fd) == device:
+                    found.add(int(entry.name))
+                    break
+            except OSError:
+                continue
+    return found
+
+
+class Demand:
+    """Turns reader counts into events: 'wanted' at once, 'idle' after `idle_after` seconds with none."""
+
+    def __init__(self, idle_after=IDLE_AFTER):
+        self.idle_after, self.wanted, self.empty_since = idle_after, False, None
+
+    def update(self, count, now):
+        if count > 0:
+            self.empty_since = None
+            if not self.wanted:
+                self.wanted = True
+                return "wanted"
+            return None
+        if not self.wanted:
+            return None
+        if self.empty_since is None:
+            self.empty_since = now
+        if now - self.empty_since >= self.idle_after:
+            self.wanted, self.empty_since = False, None
+            return "idle"
+        return None
+
+
+def capture_argv(device, size, fps):
+    """The main PC's camera as MJPEG on stdout, not re-encoded."""
+    return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "v4l2", "-input_format", "mjpeg",
+            "-video_size", size, "-framerate", str(fps), "-i", device, "-c", "copy", "-f", "mjpeg", "-"]
+
+
+def feed_argv(device, size):
+    """MJPEG on stdin, decoded into the twin's virtual webcam at the agreed size."""
+    w, h = size.split("x")
+    return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "mjpeg", "-i", "-",
+            "-vf", f"scale={w}:{h}", "-pix_fmt", "yuv420p", "-f", "v4l2", device]
+
+
+def placeholder_argv(device, size):
+    """A black picture, twice a second, so apps always see a working camera."""
+    return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-re", "-f", "lavfi",
+            "-i", f"color=black:size={size}:rate=2", "-pix_fmt", "yuv420p", "-f", "v4l2", device]
+
+
+def selftest(fresh=False):
+    try:
+        status = json.loads((runtime_dir() / "camera.json").read_text())
+    except (OSError, ValueError):
+        print("camera sharing: not running (twin camera on)")
+        return 2
+    if fresh and status.get("code") != code_hash():
+        print("camera sharing: running an older version — restart needed (systemctl --user restart twin-camera.service)")
+        return 3
+    print(f"camera sharing: {'connected to the twin' if status.get('linked') else 'not connected to the twin'}"
+          f"{' · streaming now' if status.get('streaming') else ''}")
+    return 0 if status.get("linked") else 1
