@@ -490,8 +490,9 @@ class Service:
                     raise Newer(h.get("mimes", []))
                 if h["kind"] != "data":
                     raise FrameError(f"expected data, got {h['kind']!r}")
-                if h.get("id") != want:
+                if "id" in h and h["id"] != want:
                     continue                                   # a late answer to an older want
+                # no id: the extension version GNOME loaded before an update (it runs until the next login)
                 if h.get("over"):
                     raise TooBig(h["over"])
                 return body

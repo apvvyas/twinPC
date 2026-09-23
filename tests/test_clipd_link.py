@@ -209,6 +209,15 @@ class LinkTests(unittest.TestCase):
         self.ext.sendall(cd.encode("data", b"newer text", mime=cd.TEXT_MIME, id=want2.get("id")))
         self.wait(lambda: self.twin_clipboard() == b"newer text", "the newer copy on the twin")
 
+    def test_answers_from_the_previous_extension_version_still_work(self):
+        # until the next login GNOME keeps running the extension version it loaded, which sends no ids
+        self.start()
+        self.wait(lambda: self.status()["twin"], "the agent to connect")
+        self.ext.sendall(cd.encode("offer", mimes=[cd.TEXT_MIME]))
+        h, _ = cd.read_frame(self.ext_in)
+        self.ext.sendall(cd.encode("data", b"from the old extension", mime=h["mime"]))
+        self.wait(lambda: self.twin_clipboard() == b"from the old extension", "the twin's clipboard")
+
     def test_received_files_are_not_echoed(self):
         self.start()
         self.wait(lambda: self.status()["twin"], "the agent to connect")
