@@ -117,7 +117,7 @@ class FilesTests(unittest.TestCase):
 
     def test_file_list_with_bare_paths(self):
         # GNOME sometimes answers a text/uri-list request for a Nautilus copy with plain paths
-        f = self.d / "10c12a5a.jpeg"
+        f = self.d / "photo.jpeg"
         f.write_bytes(b"jpeg")
         self.assertEqual(cd.file_paths(str(f).encode()), [f])
         self.assertEqual(cd.file_paths(str(f).encode() + b"\n" + f.as_uri().encode()), [f, f])
