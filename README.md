@@ -246,7 +246,8 @@ increasing while you `ping` the twin, the main PC's network card is stuck — re
 <summary><b>Copy/paste doesn't cross over</b></summary>
 
 `twin clip status`. On GNOME, log out and back in once after installing (that's when the
-clipboard extension loads). Files over 500 MB don't go across — use `twin push`.
+clipboard extension loads). Files over 500 MB don't go across — use `twin push`. Every copy is logged:
+`journalctl --user -t twin-clipd`.
 </details>
 
 <details>
