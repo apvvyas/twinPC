@@ -12,6 +12,9 @@ const DATA_LIMIT = 50 * 1024 * 1024;
 const RETRY_SECONDS = 5;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+// twin-shelf's windows: Wayland apps can't place themselves on GNOME, so the extension does it
+const PLACED = ['twinPC drop strip', 'twinPC shelf'];
+const EDGES = ['left', 'right', 'top', 'bottom'];
 
 function frame(header, bytes = new Uint8Array(0)) {
     const sha = GLib.compute_checksum_for_data(GLib.ChecksumType.SHA256, bytes);
@@ -31,9 +34,17 @@ export default class TwinClipboard extends Extension {
                 this._offer();
         });
         this._connect();
+        this._watched = new Map();
+        this._createdId = global.display.connect('window-created', (_display, win) => this._watch(win));
+        for (const actor of global.get_window_actors())
+            this._watch(actor.meta_window);
     }
 
     disable() {
+        global.display.disconnect(this._createdId);
+        for (const win of [...this._watched.keys()])
+            this._unwatch(win);
+        this._watched = null;
         this._selection.disconnect(this._ownerId);
         this._cancel.cancel();
         if (this._retryId)
@@ -191,5 +202,72 @@ export default class TwinClipboard extends Extension {
             clipboard.set_text(St.ClipboardType.CLIPBOARD, decoder.decode(body));
         else
             clipboard.set_content(St.ClipboardType.CLIPBOARD, mime, new GLib.Bytes(body));
+    }
+
+    _watch(win) {
+        if (this._watched.has(win))
+            return;
+        this._watched.set(win, [
+            win.connect('notify::title', () => this._place(win)),
+            win.connect('size-changed', () => this._place(win)),
+            win.connect('unmanaged', () => this._unwatch(win)),
+        ]);
+        this._place(win);
+    }
+
+    _unwatch(win) {
+        for (const id of this._watched?.get(win) ?? [])
+            win.disconnect(id);
+        this._watched?.delete(win);
+    }
+
+    _place(win) {
+        const title = win.get_title();
+        if (!PLACED.includes(title))
+            return;
+        const edge = this._edge();
+        const mon = this._edgeMonitor(edge);
+        const rect = win.get_frame_rect();
+        const gap = title === PLACED[1] ? 14 : 0;           // the shelf sits just inside the strip
+        let x, y;
+        if (edge === 'left' || edge === 'right') {
+            x = edge === 'left' ? mon.x + gap : mon.x + mon.width - rect.width - gap;
+            y = mon.y + Math.round((mon.height - rect.height) / 2);
+        } else {
+            x = mon.x + Math.round((mon.width - rect.width) / 2);
+            y = edge === 'top' ? mon.y + gap : mon.y + mon.height - rect.height - gap;
+        }
+        if (rect.x !== x || rect.y !== y)
+            win.move_frame(true, x, y);
+        if (!win.is_above())
+            win.make_above();
+        if (!win.is_on_all_workspaces())
+            win.stick();
+    }
+
+    _edge() {
+        try {
+            const path = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'twinpc', 'shelf.json']);
+            const [, bytes] = GLib.file_get_contents(path);
+            const edge = JSON.parse(decoder.decode(bytes)).edge;
+            if (EDGES.includes(edge))
+                return edge;
+        } catch (e) {
+            // not written yet: fall back to the default below
+        }
+        return 'left';
+    }
+
+    _edgeMonitor(edge) {
+        let best = global.display.get_monitor_geometry(0);
+        for (let i = 1; i < global.display.get_n_monitors(); i++) {
+            const g = global.display.get_monitor_geometry(i);
+            if ((edge === 'left' && g.x < best.x) ||
+                (edge === 'right' && g.x + g.width > best.x + best.width) ||
+                (edge === 'top' && g.y < best.y) ||
+                (edge === 'bottom' && g.y + g.height > best.y + best.height))
+                best = g;
+        }
+        return best;
     }
 }

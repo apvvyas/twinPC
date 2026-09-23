@@ -41,6 +41,20 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("header.id", js)
         self.assertRegex(js, r"kind: 'data', mime, id")
 
+    def test_extension_places_the_shelf_windows_by_their_titles(self):
+        import importlib.machinery
+        import importlib.util
+        path = EXT.parents[1] / "twin-shelf"
+        loader = importlib.machinery.SourceFileLoader("twin_shelf_titles", str(path))
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("twin_shelf_titles", loader))
+        loader.exec_module(mod)
+        js = (EXT / "extension.js").read_text()
+        self.assertIn(f"'{mod.STRIP_TITLE}'", js)
+        self.assertIn(f"'{mod.SHELF_TITLE}'", js)
+        for needed in ("window-created", "'shelf.json'", "move_frame", "make_above", "stick",
+                       "get_monitor_geometry"):
+            self.assertIn(needed, js)
+
 
 if __name__ == "__main__":
     unittest.main()
