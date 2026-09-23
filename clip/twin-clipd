@@ -406,10 +406,60 @@ def wl_set(mime, content):
     p.communicate(content)
 
 
-def agent(inp, out, cache):
+class Local:
+    """The local shelf app's connection, if any. Frames sent while it's away are dropped."""
+
+    def __init__(self):
+        self.conn, self.lock = None, threading.Lock()
+
+    def set(self, conn):
+        with self.lock:
+            self.conn = conn
+
+    def clear(self, conn):
+        with self.lock:
+            if self.conn is conn:
+                self.conn = None
+
+    def connected(self):
+        with self.lock:
+            return self.conn is not None
+
+    def send(self, frame):
+        """True if the app got it."""
+        with self.lock:
+            if self.conn is None:
+                return False
+            try:
+                self.conn.sendall(frame)
+                return True
+            except OSError:
+                return False
+
+
+def serve_unix(path, handle):
+    """Accept connections on a private unix socket at `path`, handling each on its own thread."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    path.unlink(missing_ok=True)
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(path))
+    server.listen()
+
+    def loop():
+        while True:
+            conn, _ = server.accept()
+            threading.Thread(target=handle, args=(conn,), daemon=True).start()
+
+    threading.Thread(target=loop, daemon=True).start()
+    return server
+
+
+def agent(inp, out, cache, shelf_sock=None):
     """The twin side: frames from the main PC on `inp` go onto the clipboard; clipboard changes go to `out`."""
     wayland_env()
     echo, write = Echo(), threading.Lock()
+    shelf, shelf_root = Local(), cache.parent / "shelf"
 
     def send(frame):
         with write:
@@ -447,12 +497,49 @@ def agent(inp, out, cache):
         log("the clipboard watcher stopped — exiting")
         os._exit(1)
 
+    def shelf_client(conn):
+        """The twin's shelf app: registers, drops files, or asks for status."""
+        stream = conn.makefile("rb")
+        try:
+            while (frame := read_frame(stream)) is not None:
+                h = frame[0]
+                if h["kind"] == "hello" and h.get("role") == "shelf":
+                    shelf.set(conn)
+                    shelf.send(encode("link", up=True))        # the agent only runs while linked
+                elif h["kind"] == "hello":
+                    conn.sendall(encode("hello", shelf=shelf.connected(), link=True))
+                elif h["kind"] == "drop":
+                    paths = clean_paths(h.get("paths"))
+                    if paths is None or not all(os.path.lexists(p) for p in paths):
+                        log(f"refused a drop with unusable paths: {h.get('paths')!r}")
+                        notify("those files can't be sent")
+                        continue
+                    send(encode("drop", paths=paths, size=total_size([Path(p) for p in paths])))
+                    log(f"dropped on the twin: {len(paths)} item(s)")
+        except (FrameError, OSError) as e:
+            log(f"from the twin's shelf app: {e}")
+        finally:
+            shelf.clear(conn)
+            conn.close()
+
+    if shelf_sock is not None:
+        serve_unix(shelf_sock, shelf_client)
+
     threading.Thread(target=watch, daemon=True).start()
     try:
         while (frame := read_frame(inp)) is not None:
             h, body = frame
             if h["kind"] == "hello":
                 send(encode("hello"))
+            elif h["kind"] == "slot":
+                slot = new_slot(shelf_root)
+                send(encode("slot-ready", dir=str(slot), free=shutil.disk_usage(slot).free))
+            elif h["kind"] == "shelf":
+                if h.get("state") == "failed":
+                    discard(h.get("dir"), shelf_root)
+                delivered = shelf.send(shelf_frame(**h))
+                if not delivered and h.get("state") == "ready":
+                    notify(f"files from the main PC are in {h.get('dir')}")
             elif h["kind"] in CONTENT:
                 try:
                     mime, content, key = incoming(h, body, cache)
@@ -480,6 +567,9 @@ class Service:
 
     def __init__(self, host, sock_path, cache, agent_cmd=None):
         self.sock_path, self.cache = sock_path, cache
+        self.host = host
+        self.shelf, self.shelf_root = Local(), cache.parent / "shelf"
+        self.slots, self.transfer = queue.Queue(), threading.Lock()   # one push at a time
         self.agent_cmd = agent_cmd or ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                                        "-o", "ServerAliveInterval=15", "--", host, ".local/bin/twin-clipd --agent"]
         self.echo = Echo()
@@ -517,6 +607,7 @@ class Service:
                         with self.state:
                             self.twin = p.stdin
                         log("connected to the twin")
+                        self.shelf.send(encode("link", up=True))
                     else:
                         self.from_twin(*frame)
             except FrameError as e:
@@ -526,11 +617,20 @@ class Service:
             finally:
                 with self.state:
                     self.twin = None
+                self.shelf.send(encode("link", up=False))
                 p.kill()
                 p.wait()
             time.sleep(RETRY)
 
     def from_twin(self, h, body):
+        if h["kind"] == "drop":
+            threading.Thread(target=self.pull, args=(h,), daemon=True).start()
+        elif h["kind"] == "slot-ready":
+            self.slots.put(h)
+        else:
+            self.from_twin_content(h, body)
+
+    def from_twin_content(self, h, body):
         if h["kind"] not in CONTENT:
             return
         try:
@@ -559,21 +659,29 @@ class Service:
                 if h["kind"] == "hello" and h.get("role") == "extension":
                     with self.state:
                         self.ext = conn
+                elif h["kind"] == "hello" and h.get("role") == "shelf":
+                    self.shelf.set(conn)
+                    with self.state:
+                        up = self.twin is not None
+                    self.shelf.send(encode("link", up=up))
                 elif h["kind"] == "hello":
                     with self.state:
                         status = {"twin": self.twin is not None, "extension": self.ext is not None,
-                                  "last": self.last}
+                                  "shelf": self.shelf.connected(), "last": self.last}
                     conn.sendall(encode("hello", **status))
                 elif h["kind"] == "offer":
                     mimes = h.get("mimes", [])
                     while mimes is not None:
                         mimes = self.from_main(conn, stream, mimes)
+                elif h["kind"] == "drop":
+                    threading.Thread(target=self.push, args=(h.get("paths"),), daemon=True).start()
         except (FrameError, OSError) as e:
             log(f"from the extension: {e}")
         finally:
             with self.state:
                 if self.ext is conn:
                     self.ext = None
+            self.shelf.clear(conn)
             conn.close()
 
     def from_main(self, conn, stream, mimes):
@@ -625,6 +733,87 @@ class Service:
         self.note(f"this PC → twin ({json.loads(frame.split(b'\n', 1)[0])['kind']}, {len(frame)} bytes, offered {mimes})")
         return None
 
+    def to_twin(self, frame):
+        with self.state:
+            twin = self.twin
+        if twin is None:
+            return False
+        try:
+            with self.twin_write:
+                twin.write(frame)
+                twin.flush()
+            return True
+        except OSError as e:
+            log(f"to the twin: {e}")
+            return False
+
+    def push(self, paths):
+        """This PC → twin: copy dropped files into a new holding folder on the twin and show them there."""
+        paths = clean_paths(paths)
+        if paths is None or not all(os.path.lexists(p) for p in paths):
+            log(f"refused a drop with unusable paths: {paths!r}")
+            return
+        with self.state:
+            up = self.twin is not None
+        if not up:
+            self.shelf.send(shelf_frame(state="failed", error="twin not connected"))
+            notify("twin not connected — files not sent")
+            return
+        size = total_size([Path(p) for p in paths])
+        with self.transfer:
+            while not self.slots.empty():
+                self.slots.get_nowait()
+            if not self.to_twin(encode("slot")):
+                return
+            try:
+                ready = self.slots.get(timeout=15)
+            except queue.Empty:
+                notify("the twin didn't answer — files not sent")
+                return
+            dest = ready.get("dir")
+            if not isinstance(dest, str) or not dest.startswith("/"):
+                return
+            if not enough_space(size, ready.get("free") or 0):
+                self.to_twin(shelf_frame(dir=dest, state="failed", error="not enough space on the twin"))
+                notify(f"not enough space on the twin for {size // MB} MB")
+                return
+            self.to_twin(shelf_frame(dir=dest, state="receiving", progress=0))
+            rc, err = run_rsync(rsync_push(self.host, paths, dest),
+                                lambda pct: self.to_twin(shelf_frame(dir=dest, state="receiving", progress=pct)))
+        if rc in RSYNC_OK:
+            self.to_twin(shelf_frame(dir=dest, state="ready", progress=100,
+                                     paths=[f"{dest}/{Path(p).name}" for p in paths]))
+            self.note(f"this PC → twin shelf ({len(paths)} item(s), {size} bytes)")
+        else:
+            self.to_twin(shelf_frame(dir=dest, state="failed", error=err or f"rsync exit {rc}"))
+            notify(f"files not sent to the twin: {err}")
+
+    def pull(self, h):
+        """Twin → this PC: copy files dropped on the twin into a new holding folder here and show them."""
+        paths = clean_paths(h.get("paths"))
+        if paths is None:
+            log(f"refused a drop from the twin with unusable paths: {h.get('paths')!r}")
+            return
+        size = h.get("size") if isinstance(h.get("size"), int) else 0
+        dest = new_slot(self.shelf_root)
+        if not enough_space(size, shutil.disk_usage(dest).free):
+            shutil.rmtree(dest, ignore_errors=True)
+            notify(f"not enough space here for {size // MB} MB from the twin")
+            return
+        self.shelf.send(shelf_frame(dir=str(dest), state="receiving", progress=0))
+        rc, err = run_rsync(rsync_pull(self.host, paths, dest),
+                            lambda pct: self.shelf.send(shelf_frame(dir=str(dest), state="receiving", progress=pct)))
+        if rc in RSYNC_OK:
+            ready = shelf_frame(dir=str(dest), state="ready", progress=100,
+                                paths=[str(dest / Path(p).name) for p in paths])
+            if not self.shelf.send(ready):
+                notify(f"files from the twin are in {dest}")
+            self.note(f"twin → this PC shelf ({len(paths)} item(s), {size} bytes)")
+        else:
+            shutil.rmtree(dest, ignore_errors=True)
+            self.shelf.send(shelf_frame(dir=str(dest), state="failed", error=err or f"rsync exit {rc}"))
+            notify(f"files from the twin were not received: {err}")
+
 
 def selftest(sock_path):
     try:
@@ -638,6 +827,7 @@ def selftest(sock_path):
         return 2
     print(f"clipboard sharing: running · twin {'connected' if h.get('twin') else 'not connected'}"
           f" · GNOME extension {'connected' if h.get('extension') else 'not loaded (log out and back in)'}"
+          f" · shelf app {'connected' if h.get('shelf') else 'not running'}"
           f" · last: {h.get('last')}")
     return 0 if h.get("twin") else 1
 
@@ -653,7 +843,7 @@ def main(argv=None):
     sock = run / "twinpc" / "clip.sock"
     cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "twinpc" / "clipboard"
     if a.agent:
-        return agent(sys.stdin.buffer, sys.stdout.buffer, cache)
+        return agent(sys.stdin.buffer, sys.stdout.buffer, cache, run / "twinpc" / "shelf.sock")
     if a.selftest:
         return selftest(sock)
     Service(a.host, sock, cache, shlex.split(a.agent_cmd) if a.agent_cmd else None).serve()
