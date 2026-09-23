@@ -228,6 +228,7 @@ def pick(mimes, get):
     if kind == "files":
         content, paths = read_files(mimes, get, content)
         if paths is None:                              # web links, not local files: send them as text
+            log(f"offered files, but the file list read as {content[:200]!r} — sending text instead")
             choice = text_choice(mimes)
             if choice is None:
                 return None
