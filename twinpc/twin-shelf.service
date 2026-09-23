@@ -1,0 +1,14 @@
+[Unit]
+Description=twinPC shelf — drop strip and shelf for dragging files to the main PC
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+# gtk4-layer-shell has to be loaded before libwayland-client, so it is preloaded
+Environment=LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so
+ExecStart=%h/.local/bin/twin-shelf --edge right --socket shelf.sock
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

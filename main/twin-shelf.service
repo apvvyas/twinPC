@@ -1,0 +1,12 @@
+[Unit]
+Description=twinPC shelf — drop strip and shelf for dragging files to the twin PC
+PartOf=graphical-session.target
+After=graphical-session.target twin-clip.service
+
+[Service]
+ExecStart=%h/.local/bin/twin-shelf --edge left
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

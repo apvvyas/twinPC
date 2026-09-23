@@ -49,7 +49,14 @@ class Gnome:
         ]
 
 
+    def shelf_main_steps(self, feature, repo):
+        return []          # the clipboard feature's GNOME extension places the strip and shelf here
+
+
 class Hyprland:
+    def shelf_twin_steps(self, feature, pk):
+        return [pkg_step(feature, "twin", pk, ["gtk4-layer-shell"], tag="layer-shell")]   # pins them to the edge
+
     def clipboard_twin_steps(self, feature, repo):
         return []          # Hyprland has data-control: `wl-paste --watch` works, the agent needs nothing more
 

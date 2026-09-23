@@ -321,6 +321,50 @@ def _clipboard(profile, repo, v):
     ]
 
 
+def facing_edge(twin_side, machine):
+    """The screen edge that faces the other PC: the twin's side on the main PC, the opposite one on the twin."""
+    side = twin_side if twin_side in OPPOSITE else "left"
+    return side if machine == "main" else OPPOSITE[side]
+
+
+def _shelf(profile, repo, v):
+    md = _desktop_for(profile, "main", "shelf_main_steps")
+    if isinstance(md, str):
+        return [unsupported_step("shelf", "main", md)]
+    td = _desktop_for(profile, "twin", "shelf_twin_steps")
+    if isinstance(td, str):
+        return [unsupported_step("shelf", "twin", td)]
+    r = v["repo"]
+    main_edge, twin_edge = facing_edge(v["side"], "main"), facing_edge(v["side"], "twin")
+    return [
+        pkg_step("shelf", "main", _pk(profile, "main"), ["python-gi", "gtk4-gir"]),
+        pkg_step("shelf", "twin", _pk(profile, "twin"), ["python-gi", "gtk4-gir"]),
+        *td.shelf_twin_steps("shelf", _pk(profile, "twin")),
+        manual_step("shelf.main.clipboard", "shelf", "main", "the clipboard feature (the shelf uses its link)",
+                    "Install the clipboard feature first: tool/twinpc install clipboard",
+                    check="systemctl --user is-enabled --quiet twin-clip.service"),
+        cmd_step("shelf.main.command", "shelf", "main", "install twin-shelf on this PC",
+                 check=f'[ "$(readlink ~/.local/bin/twin-shelf)" = "{r}/clip/twin-shelf" ]',
+                 apply=f'mkdir -p ~/.local/bin && ln -sf "{r}/clip/twin-shelf" ~/.local/bin/twin-shelf'),
+        file_step("shelf.twin.command", "shelf", "twin", "$HOME/.local/bin/twin-shelf",
+                  _read(repo, "clip/twin-shelf"), mode="755", describe="install twin-shelf on the twin"),
+        file_step("shelf.main.unit", "shelf", "main", "$HOME/.config/systemd/user/twin-shelf.service",
+                  repo_unit(repo, "main/twin-shelf.service").replace("--edge left\n", f"--edge {main_edge}\n")),
+        unit_step("shelf.main.service", "shelf", "main", "twin-shelf.service"),
+        file_step("shelf.twin.unit", "shelf", "twin", "$HOME/.config/systemd/user/twin-shelf.service",
+                  _read(repo, "twinpc/twin-shelf.service").replace("--edge right ", f"--edge {twin_edge} ")),
+        unit_step("shelf.twin.service", "shelf", "twin", "twin-shelf.service"),
+        *md.shelf_main_steps("shelf", repo),
+        cmd_step("shelf.main.link", "shelf", "main", "check the shelf app is connected on this PC",
+                 check="~/.local/bin/twin-shelf --selftest >/dev/null",
+                 apply="systemctl --user restart twin-shelf.service && sleep 3 && ~/.local/bin/twin-shelf --selftest"),
+        cmd_step("shelf.twin.link", "shelf", "twin", "check the shelf app is connected on the twin",
+                 check="~/.local/bin/twin-shelf --selftest --socket shelf.sock >/dev/null",
+                 apply="systemctl --user restart twin-shelf.service && sleep 3"
+                       " && ~/.local/bin/twin-shelf --selftest --socket shelf.sock"),
+    ]
+
+
 def _audio(profile, repo, v):
     return [
         file_step("audio.main.unit", "audio", "main", "$HOME/.config/systemd/user/twin-audio.service",
@@ -383,7 +427,7 @@ def _nic_fix(profile, repo, v):
 
 BUILDERS = {"connection": _connection, "cli": _cli, "gpu-stack": _gpu_stack, "routing": _routing,
             "mount": _mount, "power": _power, "unlock": _unlock, "kvm": _kvm, "clipboard": _clipboard,
-            "audio": _audio, "desktop": _desktop, "gui": _gui, "nic-fix": _nic_fix}
+            "shelf": _shelf, "audio": _audio, "desktop": _desktop, "gui": _gui, "nic-fix": _nic_fix}
 FEATURES = list(BUILDERS)
 
 
