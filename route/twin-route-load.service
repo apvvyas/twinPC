@@ -1,0 +1,10 @@
+[Unit]
+Description=CPU load sampler for twin task routing (1-minute average)
+
+[Service]
+ExecStart=%h/projects/twinPC/route/twin-route-load
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

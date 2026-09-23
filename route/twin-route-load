@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# twin-route-load — keep this PC's 1-minute average CPU-busy % in $XDG_RUNTIME_DIR/twin-route.load
+# for twin-route (which decides whether CPU-heavy commands go to the twin PC). Runs as a user service.
+interval=${TWIN_ROUTE_LOAD_INTERVAL:-5}
+out=${XDG_RUNTIME_DIR:-/tmp}/twin-route.load
+keep=$(( 60 / interval )); (( keep > 0 )) || keep=1
+samples=()
+read -r _ u n s i w q sq st _ < /proc/stat
+prev_total=$((u + n + s + i + w + q + sq + st)); prev_idle=$((i + w))
+while sleep "$interval"; do
+  read -r _ u n s i w q sq st _ < /proc/stat
+  total=$((u + n + s + i + w + q + sq + st)); idle=$((i + w))
+  dt=$((total - prev_total)); di=$((idle - prev_idle))
+  prev_total=$total; prev_idle=$idle
+  (( dt > 0 )) || continue
+  samples+=( $(( 100 * (dt - di) / dt )) )
+  (( ${#samples[@]} > keep )) && samples=( "${samples[@]:1}" )
+  sum=0; for x in "${samples[@]}"; do sum=$((sum + x)); done
+  echo $(( sum / ${#samples[@]} )) > "$out.tmp" && mv "$out.tmp" "$out"
+done
