@@ -42,9 +42,17 @@ def log(msg):
     print(f"twin-camera: {msg}", file=sys.stderr, flush=True)
 
 
+def session_env():
+    """Our environment plus what an ssh session lacks to reach the desktop (runtime dir, session bus)."""
+    env = dict(os.environ)
+    run = env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={run}/bus")
+    return env
+
+
 def notify(msg):
     try:
-        subprocess.run(["notify-send", "-a", "twinPC", "twinPC camera", msg], timeout=5,
+        subprocess.run(["notify-send", "-a", "twinPC", "twinPC camera", msg], timeout=5, env=session_env(),
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         pass
@@ -90,11 +98,38 @@ def parse_event(line):
     return h
 
 
-def readers(device, proc=Path("/proc"), exclude=()):
-    """The pids, other than `exclude`, that have `device` open."""
+def cmdline(entry):
+    try:
+        return [a.decode(errors="replace") for a in (entry / "cmdline").read_bytes().split(b"\0")[:-1]]
+    except OSError:
+        return []
+
+
+def is_our_writer(argv, device):
+    """Our placeholder or feed: an ffmpeg whose output is `-f v4l2 <device>` (an app reading it has `-i <device>`)."""
+    return argv[-3:] == ["-f", "v4l2", device] and "-i" in argv and argv[argv.index("-i") + 1] != device
+
+
+def our_writers(device, proc=Path("/proc"), kind=None):
+    """Pids of our own writers to `device`; kind 'placeholder' or 'feed' narrows it."""
     found = set()
     for entry in proc.iterdir():
-        if not entry.name.isdigit() or int(entry.name) in exclude:
+        if not entry.name.isdigit():
+            continue
+        argv = cmdline(entry)
+        if not is_our_writer(argv, device):
+            continue
+        if kind == "placeholder" and "lavfi" not in argv or kind == "feed" and "lavfi" in argv:
+            continue
+        found.add(int(entry.name))
+    return found
+
+
+def readers(device, proc=Path("/proc"), exclude=()):
+    """The pids, other than `exclude` and our own writers, that have `device` open."""
+    found = set()
+    for entry in proc.iterdir():
+        if not entry.name.isdigit() or int(entry.name) in exclude or is_our_writer(cmdline(entry), device):
             continue
         try:
             fds = list((entry / "fd").iterdir())
@@ -185,6 +220,19 @@ def read_pid(path):
     return pid if pid_alive(pid) else None
 
 
+try:                                                       # resolved now: a forked child may only call it
+    import ctypes
+    _PRCTL = ctypes.CDLL(None, use_errno=True).prctl
+except (OSError, AttributeError, ImportError):
+    _PRCTL = None
+
+
+def die_with_parent():
+    """In a child: get SIGTERM when the parent dies (Linux prctl PR_SET_PDEATHSIG), so no writer is orphaned."""
+    if _PRCTL is not None:
+        _PRCTL(1, signal.SIGTERM)
+
+
 def watch(device, size, inp, out, run=None, proc=Path("/proc")):
     """The twin side of the watch link: keep a placeholder on the webcam, report readers, show busy notices."""
     run = run or runtime_dir()
@@ -193,6 +241,13 @@ def watch(device, size, inp, out, run=None, proc=Path("/proc")):
     if not os.path.exists(device):
         log(f"no virtual camera at {device} — is the v4l2loopback module loaded? (sudo modprobe v4l2loopback)")
         return 2
+    for pid in our_writers(device, proc, "placeholder"):     # left behind by a watcher that died uncleanly
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda *_: sys.exit(0))            # run the cleanup below
     write, stop = threading.Lock(), threading.Event()
 
     def send(frame):
@@ -223,7 +278,8 @@ def watch(device, size, inp, out, run=None, proc=Path("/proc")):
                 holder = None
             elif holder is None or holder.poll() is not None:
                 holder = subprocess.Popen(placeholder_argv(device, size), stdin=subprocess.DEVNULL,
-                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                          preexec_fn=die_with_parent)
                 holder_file.write_text(str(holder.pid))
             own = {p for p in (feeding, holder.pid if holder is not None else None) if p}
             change = demand.update(len(readers(device, proc, own)), time.monotonic())
@@ -243,7 +299,15 @@ def feed(device, size, inp, run=None):
     run = run or runtime_dir()
     run.mkdir(parents=True, exist_ok=True)
     lock = run / "camera-feed.pid"
-    lock.write_text(str(os.getpid()))                      # first, so the watcher doesn't restart the placeholder
+    first = inp.read1(1 << 16) if hasattr(inp, "read1") else inp.read(1 << 16)
+    if not first:
+        return 1                                           # the main PC sent nothing: keep the placeholder
+    for pid in our_writers(device, kind="feed"):           # a stale feed from a link that died
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    lock.write_text(str(os.getpid()))                      # so the watcher doesn't restart the placeholder
     holder = read_pid(run / "camera-placeholder.pid")
     if holder is not None:
         try:
@@ -254,12 +318,32 @@ def feed(device, size, inp, run=None):
             if not pid_alive(holder):
                 break
             time.sleep(0.05)
-    p = subprocess.Popen(feed_argv(device, size), stdin=inp, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    p = subprocess.Popen(feed_argv(device, size), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, preexec_fn=die_with_parent, bufsize=0)   # unbuffered: frames go now
     lock.write_text(str(p.pid))
+
+    def pump():
+        try:
+            p.stdin.write(first)
+            while chunk := (inp.read1(1 << 16) if hasattr(inp, "read1") else inp.read(1 << 16)):
+                p.stdin.write(chunk)
+        except OSError:
+            pass
+        finally:
+            try:
+                p.stdin.close()
+            except OSError:
+                pass
+
+    threading.Thread(target=pump, daemon=True).start()
     try:
         return p.wait()
     finally:
-        lock.unlink(missing_ok=True)
+        try:
+            if lock.read_text().strip() in (str(os.getpid()), str(p.pid)):
+                lock.unlink()                              # only our own: a newer feed may have taken over
+        except OSError:
+            pass
 
 
 class Camera:
@@ -323,9 +407,9 @@ class Camera:
                 w.wait()
             time.sleep(RETRY)
 
-    def start(self):
+    def start(self, retry=False):
         with self.lock:
-            if self.stream is not None:
+            if self.stream is not None or retry and not self.wanted:
                 return
             cap = subprocess.Popen(self.capture, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             feed_proc = subprocess.Popen(self.feed_cmd, stdin=cap.stdout, stdout=subprocess.DEVNULL)
@@ -369,8 +453,7 @@ class Camera:
             return
         log(f"camera stream ended (ffmpeg exit {rc}) — retrying in 3 s")
         time.sleep(3)
-        if self.wanted:
-            self.start()
+        self.start(retry=True)
 
     def shutdown(self, *_):
         self.wanted = False

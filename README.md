@@ -11,7 +11,7 @@ One ethernet cable. No cloud, no cluster, no new habits.
 ![Bash](https://img.shields.io/badge/Bash-5.x-4EAA25?logo=gnubash&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![AMD ROCm](https://img.shields.io/badge/AMD-ROCm-ED1C24?logo=amd&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-274%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-280%20passing-brightgreen)
 
 [Features](#-features) · [How it works](#-how-it-works) · [Quick start](#-quick-start) · [Commands](#-command-cheat-sheet) · [Configuration](#%EF%B8%8F-configuration) · [Troubleshooting](#-troubleshooting)
 
@@ -332,7 +332,7 @@ main/                                main-PC services and settings · main/insta
 tool/                                twinpc: probe, profile, step engine, platform adapters, features
 clip/                                clipboard, drag-files-across, mic & camera — twin-clipd, twin-shelf, twin-camera, GNOME extension
 twinpc/                              files installed on the twin (PipeWire output, lan-mouse unit, PyTorch script)
-tests/                               274 unit & integration tests + system checks
+tests/                               280 unit & integration tests + system checks
 docs/                                design notes
 ```
 

@@ -60,6 +60,15 @@ class ReaderTests(unittest.TestCase):
             self.assertEqual(cam.readers("/dev/video9", proc), {10, 11, 13})
             self.assertEqual(cam.readers("/dev/video9", proc, exclude={11, 13}), {10})
 
+    def test_our_own_writers_are_never_readers(self):
+        # a placeholder or feed left behind by a watcher that died must not count as an app using the webcam
+        with tempfile.TemporaryDirectory() as d:
+            proc = self.make_proc(d, {10: ["/dev/video9"], 11: ["/dev/video9"], 12: ["/dev/video9"]})
+            (proc / "10" / "cmdline").write_bytes(b"\0".join(x.encode() for x in cam.placeholder_argv("/dev/video9", "64x48")) + b"\0")
+            (proc / "11" / "cmdline").write_bytes(b"\0".join(x.encode() for x in cam.feed_argv("/dev/video9", "64x48")) + b"\0")
+            (proc / "12" / "cmdline").write_bytes(b"ffmpeg\0-f\0v4l2\0-i\0/dev/video9\0-f\0null\0-\0")
+            self.assertEqual(cam.readers("/dev/video9", proc), {12})
+
     def test_unreadable_processes_are_skipped(self):
         with tempfile.TemporaryDirectory() as d:
             proc = self.make_proc(d, {10: ["/dev/video9"]})
@@ -93,6 +102,23 @@ class ArgvTests(unittest.TestCase):
         self.assertEqual(cam.placeholder_argv("/dev/video9", "1280x720"),
                          ["ffmpeg", "-hide_banner", "-loglevel", "error", "-re", "-f", "lavfi",
                           "-i", "color=black:size=1280x720:rate=2", "-pix_fmt", "yuv420p", "-f", "v4l2", "/dev/video9"])
+
+
+class SessionTests(unittest.TestCase):
+    def test_notifications_reach_the_desktop_session(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            env = cam.session_env()
+        self.assertEqual(env["XDG_RUNTIME_DIR"], f"/run/user/{os.getuid()}")
+        self.assertEqual(env["DBUS_SESSION_BUS_ADDRESS"], f"unix:path=/run/user/{os.getuid()}/bus")
+
+
+class RetryTests(unittest.TestCase):
+    def test_a_retry_never_starts_once_idle(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": d}):
+            c = cam.Camera("twin", dict(cam.DEFAULTS), ["true"], ["true"])
+            c.wanted = False
+            c.start(retry=True)
+            self.assertIsNone(c.stream)
 
 
 class SelftestTests(unittest.TestCase):

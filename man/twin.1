@@ -323,8 +323,11 @@ The twin's webcam is a v4l2loopback kernel module (installed once with sudo).
 shows whether the camera service is connected and streaming, and whether the twin's
 webcam and microphone exist;
 .B off
-stops sharing both until
-.BR "twin camera on" .
+stops sharing both: the microphone until
+.BR "twin camera on" ,
+the camera until then or your next login. If the twin can't be reached,
+.B off
+says so and its microphone input stays enabled \(em run it again when the twin is up.
 .SH TASK ROUTING
 Commands typed in a bash terminal on this PC are checked when you press Enter.
 GPU/AI work (ollama, *train*.py, whisper, torchrun, claude -p, …), anything run inside

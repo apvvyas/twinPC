@@ -209,13 +209,21 @@ case "$cmd" in
           [ -e /dev/video9 ] && echo "twin webcam: Main PC camera (/dev/video9)" || echo "twin webcam: missing (sudo modprobe v4l2loopback)"
           pactl list short sources | grep -q main-pc-mic && echo "twin mic: Main PC microphone" || echo "twin mic: off"' ;;
       on)  systemctl --user start twin-camera.service
-           ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" "$MIC"'
-             [ -f "$f.off" ] && mv "$f.off" "$f" && systemctl --user restart pipewire pipewire-pulse wireplumber; true'
-           echo "mic and camera sharing ON" ;;
+           if ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" "$MIC"'
+                [ ! -f "$f.off" ] || { mv "$f.off" "$f" && systemctl --user restart pipewire pipewire-pulse wireplumber; }'; then
+             echo "mic and camera sharing ON"
+           else
+             echo "camera sharing ON here, but the twin is unreachable — its mic input is still off; run 'twin camera on' again when it is up"
+             exit 1
+           fi ;;
       off) systemctl --user stop twin-camera.service
-           ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" "$MIC"'
-             [ -f "$f" ] && mv "$f" "$f.off" && systemctl --user restart pipewire pipewire-pulse wireplumber; true'
-           echo "mic and camera sharing OFF until 'twin camera on'" ;;
+           if ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" "$MIC"'
+                [ ! -f "$f" ] || { mv "$f" "$f.off" && systemctl --user restart pipewire pipewire-pulse wireplumber; }'; then
+             echo "mic and camera sharing OFF — the mic until 'twin camera on', the camera until then or your next login"
+           else
+             echo "camera sharing OFF here, but the twin is unreachable — its mic input is still ENABLED; run 'twin camera off' again when it is up"
+             exit 1
+           fi ;;
       *) echo "usage: twin camera status|on|off"; exit 1 ;;
     esac
     ;;

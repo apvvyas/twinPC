@@ -28,6 +28,7 @@ if "-input_format" in args:
         sys.exit(1)
     on = os.path.join(state, "camera-on")
     open(on, "w").close()
+    time.sleep(float(os.environ.get("CAM_DELAY") or 0))       # a camera that is slow to deliver its first frame
     try:
         while True:
             sys.stdout.buffer.write(b"FRAME\\n")
@@ -125,6 +126,28 @@ class CameraLinkTests(unittest.TestCase):
             os.kill(feed_pid, signal.SIGKILL)
             size = len(self.dev.read_bytes())
             self.wait(lambda: b"BLACK" in self.dev.read_bytes()[size:], "the placeholder after the feed died", 5)
+
+    def test_a_dead_watcher_leaves_nothing_that_turns_the_camera_on(self):
+        self.start()
+        self.wait(lambda: b"BLACK" in self.tail(), "the placeholder")
+        watcher = subprocess.run(["pgrep", "-f", "--", f"--watch --size 64x48 --device {self.dev}"],
+                                 capture_output=True, text=True).stdout.split()
+        for pid in watcher:
+            if int(pid) != self.svc.pid:                     # the service's own command line names --watch too
+                os.kill(int(pid), signal.SIGKILL)
+        self.wait(lambda: not self.status()["linked"], "the link to notice")
+        self.wait(lambda: self.status()["linked"], "a new watcher")
+        time.sleep(3)
+        self.assertFalse((self.state / "camera-on").exists(), "the camera turned on with nobody reading")
+
+    def test_the_placeholder_stays_until_the_first_frame(self):
+        self.start(CAM_DELAY="2")
+        holder = int((self.twin_run / "twinpc" / "camera-placeholder.pid").read_text())
+        with open(self.dev, "rb"):
+            self.wait(lambda: (self.state / "camera-on").exists(), "the camera to turn on")
+            time.sleep(1)
+            os.kill(holder, 0)                               # still alive: the webcam never went without a writer
+            self.wait(lambda: self.tail().endswith(b"FRAME\n"), "live frames")
 
     def test_stopping_the_service_clears_its_status(self):
         self.start()
