@@ -7,13 +7,19 @@ Twin (--agent): watches the clipboard with `wl-paste --watch` and sets it with `
 
 A frame is one JSON header line — {"v":1,"kind":…,"size":n,"sha":"<sha256 of body>",…} — then n bytes.
 """
+import argparse
 import hashlib
 import io
 import json
 import os
+import shlex
 import shutil
+import socket
+import subprocess
+import sys
 import tarfile
 import threading
+import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -29,6 +35,7 @@ GNOME_FILES = "x-special/gnome-copied-files"
 BROWSER_HINTS = ("text/x-moz-url", "text/html")    # a copied link also offers text/uri-list
 SECRET_HINT = "x-kde-passwordManagerHint"
 KEEP = 5
+RETRY = 10
 
 
 class FrameError(Exception):
@@ -230,3 +237,280 @@ def incoming(h, body, cache):
     if h["kind"] == "files":
         return URI_LIST, uri_list(unpack(body, cache))
     return h["mime"], body
+
+
+def log(msg):
+    print(f"twin-clipd: {msg}", file=sys.stderr, flush=True)
+
+
+def notify(msg):
+    try:
+        subprocess.run(["notify-send", "-a", "twinPC", "twinPC clipboard", msg], timeout=5,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def too_big(e):
+    notify(f"not shared: {e.args[0] // MB} MB is over the limit — use twin push")
+
+
+def wayland_env():
+    """Reach the logged-in desktop from an ssh session: runtime dir, Wayland display, session bus."""
+    env = os.environ
+    run = env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    if "WAYLAND_DISPLAY" not in env:
+        socks = sorted(p.name for p in Path(run).glob("wayland-*") if not p.name.endswith(".lock"))
+        if socks:
+            env["WAYLAND_DISPLAY"] = socks[0]
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={run}/bus")
+
+
+def wl_types():
+    r = subprocess.run(["wl-paste", "--list-types"], capture_output=True)
+    return r.stdout.decode(errors="replace").splitlines() if r.returncode == 0 else []
+
+
+def wl_get(mime):
+    return subprocess.run(["wl-paste", "--no-newline", "--type", mime], capture_output=True, check=True).stdout
+
+
+def wl_set(mime, content):
+    """Set the clipboard. wl-copy stays behind to serve it, so it must not hold our stdout (the ssh stream)."""
+    argv = ["wl-copy"] if mime.startswith("text/plain") else ["wl-copy", "--type", mime]
+    p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    p.communicate(content)
+
+
+def agent(inp, out, cache):
+    """The twin side: frames from the main PC on `inp` go onto the clipboard; clipboard changes go to `out`."""
+    wayland_env()
+    echo, write = Echo(), threading.Lock()
+
+    def send(frame):
+        with write:
+            out.write(frame)
+            out.flush()
+
+    try:                                          # what is on the clipboard already isn't a new copy
+        picked = pick(wl_types(), wl_get)
+        if picked:
+            echo.mark(picked[1])
+    except (subprocess.CalledProcessError, OSError):
+        pass
+    watcher = subprocess.Popen(["wl-paste", "--watch", "echo", "changed"], stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL)
+
+    def watch():
+        for _ in watcher.stdout:
+            try:
+                frame = build_frame(wl_types(), wl_get, echo)
+            except TooBig as e:
+                too_big(e)
+                continue
+            except (subprocess.CalledProcessError, OSError):
+                continue
+            if frame:
+                try:
+                    send(frame)
+                except OSError:
+                    return
+
+    threading.Thread(target=watch, daemon=True).start()
+    try:
+        while (frame := read_frame(inp)) is not None:
+            h, body = frame
+            if h["kind"] == "hello":
+                send(encode("hello"))
+            elif h["kind"] in CONTENT:
+                try:
+                    mime, content = incoming(h, body, cache)
+                except (tarfile.TarError, OSError) as e:
+                    notify(f"files from the main PC were not accepted: {e}")
+                    continue
+                echo.mark(content)
+                wl_set(mime, content)
+        return 0
+    except FrameError as e:
+        log(f"from the main PC: {e}")
+        return 1
+    finally:
+        watcher.terminate()
+
+
+class Newer(Exception):
+    """A newer offer arrived while the previous one was being read. args[0]: its mimes."""
+
+
+class Service:
+    """The main PC side: the GNOME extension on a unix socket, the twin's agent over ssh."""
+
+    def __init__(self, host, sock_path, cache, agent_cmd=None):
+        self.sock_path, self.cache = sock_path, cache
+        self.agent_cmd = agent_cmd or ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                                       "-o", "ServerAliveInterval=15", "--", host, ".local/bin/twin-clipd --agent"]
+        self.echo = Echo()
+        self.state = threading.Lock()                  # guards twin, ext, last
+        self.twin_write, self.ext_write = threading.Lock(), threading.Lock()
+        self.twin = self.ext = None
+        self.last = "nothing yet"
+
+    def serve(self):
+        self.sock_path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.sock_path.parent, 0o700)
+        self.sock_path.unlink(missing_ok=True)
+        server = socket.socket(socket.AF_UNIX)
+        server.bind(str(self.sock_path))
+        server.listen()
+        threading.Thread(target=self.twin_loop, daemon=True).start()
+        while True:
+            conn, _ = server.accept()
+            threading.Thread(target=self.client, args=(conn,), daemon=True).start()
+
+    def note(self, what):
+        with self.state:
+            self.last = f"{time.strftime('%H:%M:%S')} {what}"
+
+    def twin_loop(self):
+        while True:
+            p = subprocess.Popen(self.agent_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            with self.state:
+                self.twin = p.stdin
+            try:
+                while (frame := read_frame(p.stdout)) is not None:
+                    self.from_twin(*frame)
+            except FrameError as e:
+                log(f"from the twin: {e}")
+            finally:
+                with self.state:
+                    self.twin = None
+                p.kill()
+                p.wait()
+            time.sleep(RETRY)
+
+    def from_twin(self, h, body):
+        if h["kind"] not in CONTENT:
+            return
+        try:
+            mime, content = incoming(h, body, self.cache)
+        except (tarfile.TarError, OSError) as e:
+            notify(f"files from the twin were not accepted: {e}")
+            return
+        self.echo.mark(content)
+        self.note(f"twin → this PC ({h['kind']})")
+        with self.state:
+            ext = self.ext
+        if ext is None:
+            wl_set(mime, content)          # extension not loaded yet: a one-shot wl-copy works on GNOME too
+            return
+        try:
+            with self.ext_write:
+                ext.sendall(encode("set", content, mime=mime))
+        except OSError as e:
+            log(f"to the extension: {e}")
+
+    def client(self, conn):
+        stream = conn.makefile("rb")
+        try:
+            while (frame := read_frame(stream)) is not None:
+                h = frame[0]
+                if h["kind"] == "hello" and h.get("role") == "extension":
+                    with self.state:
+                        self.ext = conn
+                elif h["kind"] == "hello":
+                    with self.state:
+                        status = {"twin": self.twin is not None, "extension": self.ext is not None,
+                                  "last": self.last}
+                    conn.sendall(encode("hello", **status))
+                elif h["kind"] == "offer":
+                    mimes = h.get("mimes", [])
+                    while mimes is not None:
+                        mimes = self.from_main(conn, stream, mimes)
+        except (FrameError, OSError) as e:
+            log(f"from the extension: {e}")
+        finally:
+            with self.state:
+                if self.ext is conn:
+                    self.ext = None
+            conn.close()
+
+    def from_main(self, conn, stream, mimes):
+        """Send the main PC's new clipboard to the twin. Returns the mimes of a newer offer that arrived
+        meanwhile (handle it next), else None."""
+        with self.state:
+            twin = self.twin
+        if twin is None:
+            return None                                # twin away: dropped, not queued
+
+        def get(mime):
+            with self.ext_write:
+                conn.sendall(encode("want", mime=mime))
+            frame = read_frame(stream)
+            if frame is None:
+                raise OSError("the extension went away")
+            h, body = frame
+            if h["kind"] == "offer":
+                raise Newer(h.get("mimes", []))
+            if h["kind"] != "data":
+                raise FrameError(f"expected data, got {h['kind']!r}")
+            if h.get("over"):
+                raise TooBig(h["over"])
+            return body
+
+        try:
+            frame = build_frame(mimes, get, self.echo)
+        except Newer as newer:
+            return newer.args[0]
+        except TooBig as e:
+            too_big(e)
+            return None
+        if frame is None:
+            return None
+        try:
+            with self.twin_write:
+                twin.write(frame)
+                twin.flush()
+        except OSError as e:
+            log(f"to the twin: {e}")
+            return None
+        self.note("this PC → twin")
+        return None
+
+
+def selftest(sock_path):
+    try:
+        s = socket.socket(socket.AF_UNIX)
+        s.settimeout(5)
+        s.connect(str(sock_path))
+        s.sendall(encode("hello", role="probe"))
+        h, _ = read_frame(s.makefile("rb"))
+    except (OSError, FrameError, TypeError):
+        print("clipboard sharing: not running (twin clip on)")
+        return 2
+    print(f"clipboard sharing: running · twin {'connected' if h.get('twin') else 'not connected'}"
+          f" · GNOME extension {'connected' if h.get('extension') else 'not loaded (log out and back in)'}"
+          f" · last: {h.get('last')}")
+    return 0 if h.get("twin") else 1
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="twin-clipd", description="share the clipboard with the twin PC")
+    ap.add_argument("--agent", action="store_true", help="the twin side: frames on stdin/stdout")
+    ap.add_argument("--selftest", action="store_true", help="is the service running and the twin connected?")
+    ap.add_argument("--host", default=os.environ.get("TWIN_HOST") or "twin", help="ssh alias of the twin")
+    ap.add_argument("--agent-cmd", help=argparse.SUPPRESS)      # tests: run the agent without ssh
+    a = ap.parse_args(argv)
+    run = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+    sock = run / "twinpc" / "clip.sock"
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "twinpc" / "clipboard"
+    if a.agent:
+        return agent(sys.stdin.buffer, sys.stdout.buffer, cache)
+    if a.selftest:
+        return selftest(sock)
+    Service(a.host, sock, cache, shlex.split(a.agent_cmd) if a.agent_cmd else None).serve()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
