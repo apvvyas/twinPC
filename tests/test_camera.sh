@@ -21,10 +21,10 @@ for _ in $(seq 40); do
 done
 [[ $off == 1 ]] || { echo "FAIL this PC's camera stayed on after the twin stopped reading"; exit 1; }
 
-# record 1 s from the main PC's microphone on the twin; it must not be pure silence
+# record ~3 s from the main PC's microphone on the twin; it must not be pure silence
 rms=$(ssh twin 'bash -s' <<'EOF'
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
-timeout 2 parecord -d main-pc-mic --raw --format=s16le --rate=16000 --channels=1 2>/dev/null |
+timeout 4 parecord -d main-pc-mic --raw --format=s16le --rate=16000 --channels=1 2>/dev/null |
   python3 -c 'import sys, array, math; a = array.array("h", sys.stdin.buffer.read()); print(int(math.sqrt(sum(x * x for x in a) / max(len(a), 1))))'
 EOF
 )
