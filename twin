@@ -3,10 +3,13 @@
 # Jobs run in remote tmux sessions, so they survive disconnects; output is logged to ~/jobs/<name>.log.
 set -euo pipefail
 
+# Machine-specific settings (TWIN_MAC, TWIN_IFACE, …) live outside the repo; see README "Configuration".
+[[ -f ${XDG_CONFIG_HOME:-$HOME/.config}/twinpc/config ]] && . "${XDG_CONFIG_HOME:-$HOME/.config}/twinpc/config"
 HOST=${TWIN_HOST:-twin}
-TWIN_MAC=${TWIN_MAC:-30:c5:99:ab:f7:fe}      # twin's enp6s0 (Realtek RTL8111)
+TWIN_MAC=${TWIN_MAC:-}                       # twin's wired MAC (Wake-on-LAN) — set it in the config file
 TWIN_BCAST=${TWIN_BCAST:-10.42.0.255}        # broadcast address of the LAN link
-TWIN_IFACE=${TWIN_IFACE:-enp11s0}            # this PC's ethernet port the twin is plugged into
+# this PC's ethernet port the twin is plugged into: the one holding the shared-connection address
+TWIN_IFACE=${TWIN_IFACE:-$(ip -o -4 addr show 2>/dev/null | awk '$4 ~ /^10\.42\.0\.1\//{print $2; exit}')}
 # Environment every job gets: ROCm override for the RX 6600 (gfx1032) + the PyTorch venv on PATH.
 REMOTE_ENV='export HSA_OVERRIDE_GFX_VERSION=10.3.0 PATH=$HOME/ai-env/bin:$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH; mkdir -p $HOME/jobs'
 
@@ -268,6 +271,7 @@ for c in json.load(sys.stdin):
     esac
     ;;
   wake)
+    [[ -n $TWIN_MAC ]] || { echo "set TWIN_MAC (the twin's wired MAC) in ${XDG_CONFIG_HOME:-$HOME/.config}/twinpc/config"; exit 1; }
     # Wake-on-LAN magic packet (6×0xFF + MAC×16), broadcast on the LAN link; then wait for SSH.
     # With twin off the cable has no carrier and NetworkManager may drop 10.42.0.1 from the
     # interface; then a UDP broadcast would have no route, so send a raw ethernet frame instead (needs sudo).

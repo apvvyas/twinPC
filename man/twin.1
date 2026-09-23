@@ -288,7 +288,7 @@ for one shell) switches it.
 .TP
 .B wake
 Send a Wake-on-LAN magic packet to the twin's ethernet card
-.RB ( 30:c5:99:ab:f7:fe )
+.RB ( TWIN_MAC )
 on the LAN broadcast
 .BR 10.42.0.255 ,
 then wait up to 3 minutes. When the twin reaches its disk-encryption prompt
@@ -408,9 +408,19 @@ SSH host to use instead of
 .BR twin .
 .TP
 .B TWIN_MAC
-MAC address used by
+The twin's wired MAC address, used by
 .B twin wake
-(default 30:c5:99:ab:f7:fe).
+(no default \(em set it). Settings like this one go in
+.I ~/.config/twinpc/config
+as plain
+.I NAME=value
+lines; the
+.B twin
+command and its services read that file.
+.TP
+.B TWIN_IFACE
+This PC's ethernet port the twin is plugged into (default: the one holding the
+shared-connection address 10.42.0.1).
 .TP
 .B TWIN_BCAST
 Broadcast address used by
