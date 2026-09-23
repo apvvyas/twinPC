@@ -54,6 +54,7 @@ PC**, and it shuts down with you — unless a job is still running.
 ### 🖱️ One desk, two computers
 Push the mouse off your screen's edge onto the twin's monitor. No monitor on the twin?
 **Super+F12** shows its desktop fullscreen.
+**Copy on one PC, paste on the other** — text, images and files.
 
 </td>
 <td valign="top">
@@ -202,6 +203,7 @@ Optional GPU PyTorch is part of the `gpu-stack` feature (~4 GB download).
 | `twin desktop` (**Super+F12**) · `twin gui shot` | see the twin's screen |
 | `twin push <dir>` · `twin pull <path>` | copy files |
 | `twin audio test` | play a tone on the twin through your speakers |
+| `twin clip status` · `twin clip off` | clipboard sharing between the PCs |
 
 Full reference: **`man twin`**.
 
@@ -241,6 +243,13 @@ increasing while you `ping` the twin, the main PC's network card is stuck — re
 </details>
 
 <details>
+<summary><b>Copy/paste doesn't cross over</b></summary>
+
+`twin clip status`. On GNOME, log out and back in once after installing (that's when the
+clipboard extension loads). Files over 500 MB don't go across — use `twin push`.
+</details>
+
+<details>
 <summary><b>The twin waits at its disk-encryption prompt</b></summary>
 
 Run `twin unlock` in a terminal and type the disk password.
@@ -271,6 +280,7 @@ twin · twin-completion.bash · man/   the twin command, tab completion and manu
 route/                               automatic task routing — router, rules, runner, bash hook
 main/                                main-PC services and settings · main/install.sh
 tool/                                twinpc: probe, profile, step engine, platform adapters, features
+clip/                                clipboard sharing — twin-clipd service/agent and the GNOME extension
 twinpc/                              files installed on the twin (PipeWire output, lan-mouse unit, PyTorch script)
 tests/                               54 unit & integration tests + system checks
 docs/                                design notes

@@ -249,6 +249,33 @@ reconnects the tunnel if its stream here has lost its output (it is created
 "dont-reconnect", so it stays silent after e.g. Bluetooth disconnects or a reboot) \(em
 .I twin-kvm.timer
 runs it every 20 s.
+.SH CLIPBOARD
+Copy on either PC and paste on the other: text, images (PNG) and files. Files up to
+500 MB in total go across when you copy them and land in
+.I ~/.cache/twinpc/clipboard/
+on the receiving PC (the newest 5 copies are kept); bigger selections show a
+notification \(em use
+.B twin push
+for those. Anything a password manager marks as secret is never sent.
+The user service
+.I twin-clip.service
+runs
+.BR twin-clipd ,
+which keeps one SSH connection to
+.B twin-clipd \-\-agent
+on the twin; on GNOME a small extension
+.RI ( twinpc-clipboard@twinpc )
+watches the clipboard, because GNOME has no clipboard protocol for other programs.
+A new extension loads at login: log out and back in once after installing.
+.TP
+.BR "clip " [ status | on | off ]
+.B status
+shows whether the service runs, the twin and the extension are connected, and the
+last copy that went across;
+.B off
+stops sharing until
+.B twin clip on
+or your next login.
 .SH TASK ROUTING
 Commands typed in a bash terminal on this PC are checked when you press Enter.
 GPU/AI work (ollama, *train*.py, whisper, torchrun, claude -p, …), anything run inside

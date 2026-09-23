@@ -40,6 +40,7 @@ twin — run and manage jobs on the twin PC   (full manual: man twin)
   twin pull <remote> [local]   rsync files from twin (default local: .)
   twin models                  list Ollama models
   twin audio [on|off|status|test] twin's sound through this PC's speakers
+  twin clip [status|on|off]    clipboard sharing with twin (text, images, files)
   twin sh [cmd...]             shell on twin (or run a one-off command)
 
   twin desktop [stop]          toggle twin's screen fullscreen here (Super+F12) — for headless twin
@@ -169,6 +170,16 @@ case "$cmd" in
         ssh "$HOST" "$AUDIO_ENV; speaker-test -t sine -f 660 -l 1 -p 1 >/dev/null 2>&1 & sleep 1.5; kill \$! 2>/dev/null"
         echo "played a 1.5 s tone on twin's default output" ;;
       *) echo "usage: twin audio on|off|status|test|heal"; exit 1 ;;
+    esac
+    ;;
+  clip)
+    # clipboard sharing: twin-clip.service here + `twin-clipd --agent` on twin over ssh (man twin: CLIPBOARD)
+    case ${1:-status} in
+      status) "$HOME/.local/bin/twin-clipd" --selftest || true ;;
+      on)  systemctl --user start twin-clip.service; echo "clipboard sharing ON" ;;
+      off) systemctl --user stop twin-clip.service
+           echo "clipboard sharing OFF until 'twin clip on' or your next login" ;;
+      *) echo "usage: twin clip status|on|off"; exit 1 ;;
     esac
     ;;
   route)
