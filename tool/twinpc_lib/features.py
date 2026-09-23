@@ -405,7 +405,7 @@ def _camera(profile, repo, v):
                   after=f"{USER_ENV} systemctl --user restart pipewire pipewire-pulse wireplumber"),
         cmd_step("camera.twin.default-mic", "camera", "twin", "make 'Main PC microphone' the twin's default input",
                  check=f"{USER_ENV} pactl get-default-source | grep -qx main-pc-mic",
-                 apply=f"{USER_ENV} for i in $(seq 20); do pactl list short sources | grep -q main-pc-mic && break;"
+                 apply=f"{USER_ENV} for i in $(seq 60); do pactl list short sources | grep -q main-pc-mic && break;"
                        " sleep 0.5; done; pactl set-default-source main-pc-mic"),
         cmd_step("camera.twin.module", "camera", "twin", "install the virtual-camera kernel module (DKMS)",
                  check=f'{kernel} && pacman -Q v4l2loopback-dkms "$k-headers" >/dev/null 2>&1',

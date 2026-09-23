@@ -54,6 +54,11 @@ class CameraPlanTests(unittest.TestCase):
         self.assertIn("twin-camera --selftest --fresh", r.calls[-1][1])
         self.assertIn("try-restart twin-camera.service", applied(steps["camera.main.unit"], "main")[1])
 
+    def test_default_mic_waits_for_the_tunnel_to_retry(self):
+        # after the PipeWire restart the tunnel's first connect can fail; it retries 5 s later
+        [st] = [s for s in camera_steps(PROFILE) if s.id == "camera.twin.default-mic"]
+        self.assertIn("$(seq 60)", applied(st, "twin")[1])
+
     def test_needs_the_audio_forward(self):
         [st] = [s for s in camera_steps(PROFILE) if s.id == "camera.main.audio"]
         self.assertIsNone(st.apply)
