@@ -2,6 +2,7 @@ import importlib.machinery
 import importlib.util
 import io
 import os
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -242,6 +243,79 @@ class BuildFrameTests(unittest.TestCase):
         self.assertIsNone(self.frame(["text/plain"], {"text/plain": b""}))
         with self.assertRaises(cd.TooBig):
             self.frame(["text/plain"], {"text/plain": b"x" * (cd.LIMITS["text"] + 1)})
+
+
+class ShelfCoreTests(unittest.TestCase):
+    def test_clean_paths(self):
+        self.assertEqual(cd.clean_paths(["/a b/c/", "/-x", "/ünï"]), ["/a b/c", "/-x", "/ünï"])
+        for bad in [[], "/a", ["rel/x"], ["/"], ["/a\nb"], ["/a\0b"], [3], None]:
+            with self.subTest(bad=bad):
+                self.assertIsNone(cd.clean_paths(bad))
+
+    def test_new_slot_numbers_and_prunes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d, "shelf")
+            slots = [cd.new_slot(root) for _ in range(7)]
+            self.assertEqual([s.name for s in slots], [str(i) for i in range(1, 8)])
+            self.assertEqual(sorted(int(p.name) for p in root.iterdir()), [3, 4, 5, 6, 7])
+
+    def test_discard_only_removes_holding_folders(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d, "shelf")
+            slot = cd.new_slot(root)
+            other = Path(d, "keep")
+            other.mkdir()
+            cd.discard(str(other), root)
+            cd.discard(str(root), root)
+            cd.discard(None, root)
+            self.assertTrue(other.exists() and root.exists())
+            cd.discard(str(slot), root)
+            self.assertFalse(slot.exists())
+
+    def test_rsync_argv_keeps_every_path_one_argument(self):
+        paths = ["/home/u/a b.txt", "/home/u/-rf", "/home/u/it's \"q\".png", "/home/u/ünï"]
+        push = cd.rsync_push("twin", paths, "/home/t/.cache/twinpc/shelf/3")
+        self.assertEqual(push[:7], ["rsync", "-a", "--protect-args", "--info=progress2",
+                                    "-e", "ssh -o BatchMode=yes", "--"])
+        self.assertEqual(push[7:], [*paths, "twin:/home/t/.cache/twinpc/shelf/3/"])
+        pull = cd.rsync_pull("twin", paths, "/home/m/.cache/twinpc/shelf/4")
+        self.assertEqual(pull[:7], push[:7])
+        self.assertEqual(pull[7:], [*(f"twin:{p}" for p in paths), "/home/m/.cache/twinpc/shelf/4/"])
+
+    def test_progress_lines(self):
+        self.assertEqual(cd.progress("      1,234,567  45%    1.20MB/s    0:00:03"), 45)
+        self.assertEqual(cd.progress("  32,768 100%   31.25MB/s    0:00:00 (xfr#1, to-chk=0/1)"), 100)
+        self.assertIsNone(cd.progress('rsync: [sender] link_stat "/x" failed: No such file or directory (2)'))
+        self.assertIsNone(cd.progress("sending incremental file list"))
+
+    def test_enough_space(self):
+        self.assertTrue(cd.enough_space(10 * cd.MB, 100 * cd.MB))
+        self.assertFalse(cd.enough_space(90 * cd.MB, 100 * cd.MB))
+
+    def test_run_rsync_reports_progress_and_errors(self):
+        seen = []
+        script = ("import sys; sys.stdout.write('  1  10%  1MB/s  0:00:01\\r  2  60%  1MB/s  0:00:01\\r"
+                  "rsync error: some files could not be transferred\\n'); sys.exit(23)")
+        rc, err = cd.run_rsync([sys.executable, "-c", script], seen.append)
+        self.assertEqual((rc, seen), (23, [10, 60]))
+        self.assertIn("could not be transferred", err)
+        self.assertEqual(cd.run_rsync(["/nonexistent/rsync"], seen.append)[0], 127)
+
+    def test_shelf_frames_are_control_frames(self):
+        for kind in ("drop", "slot", "slot-ready", "shelf", "link"):
+            with self.subTest(kind=kind):
+                h, body = cd.read_frame(io.BytesIO(cd.encode(kind, paths=["/a"])))
+                self.assertEqual((h["kind"], h["paths"], body), (kind, ["/a"], b""))
+                with self.assertRaises(cd.FrameError):
+                    cd.read_frame(io.BytesIO(b'{"v": 1, "kind": "%s", "size": 3, "sha": ""}\nabc' % kind.encode()))
+
+    def test_shelf_frame_keeps_only_shelf_fields(self):
+        h, _ = cd.read_frame(io.BytesIO(cd.shelf_frame(dir="/d", state="ready", paths=["/d/a"], progress=100,
+                                                       error=None, extra="x")))
+        self.assertEqual({k: h[k] for k in ("kind", "dir", "state", "paths", "progress")},
+                         {"kind": "shelf", "dir": "/d", "state": "ready", "paths": ["/d/a"], "progress": 100})
+        self.assertNotIn("extra", h)
+        self.assertNotIn("error", h)
 
 
 if __name__ == "__main__":
