@@ -351,10 +351,12 @@ def agent(inp, out, cache):
                 try:
                     mime, content, key = incoming(h, body, cache)
                 except (tarfile.TarError, OSError) as e:
+                    log(f"refused {h['kind']} from the main PC: {e}")
                     notify(f"files from the main PC were not accepted: {e}")
                     continue
                 echo.mark(key)
                 wl_set(mime, content)
+                log(f"twin clipboard set: {h['kind']} as {mime}, {len(content)} bytes")
         return 0
     except FrameError as e:
         log(f"from the main PC: {e}")
@@ -431,7 +433,7 @@ class Service:
             notify(f"files from the twin were not accepted: {e}")
             return
         self.echo.mark(key)
-        self.note(f"twin → this PC ({h['kind']})")
+        self.note(f"twin → this PC ({h['kind']}, {len(body)} bytes)")
         with self.state:
             ext = self.ext
         if ext is None:
@@ -514,7 +516,7 @@ class Service:
         except OSError as e:
             log(f"to the twin: {e}")
             return None
-        self.note("this PC → twin")
+        self.note(f"this PC → twin ({json.loads(frame.split(b'\n', 1)[0])['kind']}, {len(frame)} bytes, offered {mimes})")
         return None
 
 
