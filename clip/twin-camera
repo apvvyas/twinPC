@@ -164,3 +164,252 @@ def selftest(fresh=False):
     print(f"camera sharing: {'connected to the twin' if status.get('linked') else 'not connected to the twin'}"
           f"{' · streaming now' if status.get('streaming') else ''}")
     return 0 if status.get("linked") else 1
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def read_pid(path):
+    """The live pid stored in `path`, or None."""
+    try:
+        pid = int(path.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    return pid if pid_alive(pid) else None
+
+
+def watch(device, size, inp, out, run=None, proc=Path("/proc")):
+    """The twin side of the watch link: keep a placeholder on the webcam, report readers, show busy notices."""
+    run = run or runtime_dir()
+    run.mkdir(parents=True, exist_ok=True)
+    feed_lock, holder_file = run / "camera-feed.pid", run / "camera-placeholder.pid"
+    if not os.path.exists(device):
+        log(f"no virtual camera at {device} — is the v4l2loopback module loaded? (sudo modprobe v4l2loopback)")
+        return 2
+    write, stop = threading.Lock(), threading.Event()
+
+    def send(frame):
+        with write:
+            out.write(frame)
+            out.flush()
+
+    def listen():
+        for line in inp:
+            try:
+                ev = parse_event(line)
+            except ValueError:
+                continue
+            if ev["event"] == "busy":
+                notify(f"Main PC camera is {ev.get('reason') or 'busy'}")
+        stop.set()                                         # the main PC went away
+
+    threading.Thread(target=listen, daemon=True).start()
+    demand, holder = Demand(IDLE_AFTER), None
+    send(event("ready"))
+    try:
+        while not stop.is_set():
+            feeding = read_pid(feed_lock)
+            if feeding is not None:
+                if holder is not None and holder.poll() is None:
+                    holder.terminate()
+                    holder.wait()
+                holder = None
+            elif holder is None or holder.poll() is not None:
+                holder = subprocess.Popen(placeholder_argv(device, size), stdin=subprocess.DEVNULL,
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                holder_file.write_text(str(holder.pid))
+            own = {p for p in (feeding, holder.pid if holder is not None else None) if p}
+            change = demand.update(len(readers(device, proc, own)), time.monotonic())
+            if change:
+                log(f"the twin's webcam is {'in use' if change == 'wanted' else 'idle'}")
+                send(event(change))
+            stop.wait(POLL)
+        return 0
+    finally:
+        if holder is not None and holder.poll() is None:
+            holder.terminate()
+        holder_file.unlink(missing_ok=True)
+
+
+def feed(device, size, inp, run=None):
+    """The twin side of a stream: stop the placeholder and decode the main PC's MJPEG into the webcam."""
+    run = run or runtime_dir()
+    run.mkdir(parents=True, exist_ok=True)
+    lock = run / "camera-feed.pid"
+    lock.write_text(str(os.getpid()))                      # first, so the watcher doesn't restart the placeholder
+    holder = read_pid(run / "camera-placeholder.pid")
+    if holder is not None:
+        try:
+            os.kill(holder, signal.SIGTERM)
+        except OSError:
+            pass
+        for _ in range(20):
+            if not pid_alive(holder):
+                break
+            time.sleep(0.05)
+    p = subprocess.Popen(feed_argv(device, size), stdin=inp, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    lock.write_text(str(p.pid))
+    try:
+        return p.wait()
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+class Camera:
+    """The main PC side: the watch link to the twin, and the camera stream while the twin wants it."""
+
+    def __init__(self, host, cfg, watch_cmd=None, feed_cmd=None):
+        size, fps, device = cfg["TWIN_CAMERA_SIZE"], cfg["TWIN_CAMERA_FPS"], cfg["TWIN_CAMERA_DEVICE"]
+        ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "--", host]
+        self.watch_cmd = watch_cmd or [*ssh, f".local/bin/twin-camera --watch --size {size}"]
+        self.feed_cmd = feed_cmd or [*ssh, f".local/bin/twin-camera --feed --size {size}"]
+        self.capture = capture_argv(device, size, fps)
+        self.lock = threading.Lock()
+        self.stream, self.wanted, self.watcher = None, False, None
+        self.status_path = runtime_dir() / "camera.json"
+        self.status = {"linked": False, "streaming": False, "code": CODE}
+
+    def save(self, **changes):
+        self.status.update(changes)
+        self.status_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.status_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.status))
+        tmp.replace(self.status_path)
+
+    def tell_twin(self, frame):
+        w = self.watcher
+        if w is not None:
+            try:
+                w.stdin.write(frame)
+                w.stdin.flush()
+            except OSError:
+                pass
+
+    def run(self):
+        self.save(linked=False, streaming=False)
+        while True:
+            w = subprocess.Popen(self.watch_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            self.watcher = w
+            try:
+                for line in w.stdout:
+                    try:
+                        name = parse_event(line)["event"]
+                    except ValueError:
+                        continue
+                    if name == "ready":
+                        self.save(linked=True)
+                        log("connected to the twin's camera watcher")
+                    elif name == "wanted":
+                        self.wanted = True
+                        self.start()
+                    elif name == "idle":
+                        self.wanted = False
+                        self.stop()
+            except Exception as e:                               # never let one bad line end the link for good
+                log(f"watch link failed: {e!r}")
+            finally:
+                self.wanted = False
+                self.stop()
+                self.watcher = None
+                self.save(linked=False)
+                w.kill()
+                w.wait()
+            time.sleep(RETRY)
+
+    def start(self):
+        with self.lock:
+            if self.stream is not None:
+                return
+            cap = subprocess.Popen(self.capture, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            feed_proc = subprocess.Popen(self.feed_cmd, stdin=cap.stdout, stdout=subprocess.DEVNULL)
+            cap.stdout.close()                                   # the feed owns the pipe now
+            self.stream = (cap, feed_proc)
+        self.save(streaming=True)
+        log("streaming the camera to the twin")
+        threading.Thread(target=self.supervise, args=(cap, feed_proc, time.monotonic()), daemon=True).start()
+
+    def stop(self):
+        with self.lock:
+            stream, self.stream = self.stream, None
+        if stream is None:
+            return
+        for p in stream:
+            if p.poll() is None:
+                p.terminate()
+        for p in stream:
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+        self.save(streaming=False)
+        log("camera stream stopped")
+
+    def supervise(self, cap, feed_proc, began):
+        err = cap.stderr.read().decode(errors="replace").strip()
+        rc = cap.wait()
+        with self.lock:
+            mine = self.stream is not None and self.stream[0] is cap
+            if mine:
+                self.stream = None
+        if not mine:
+            return                                               # stopped on purpose
+        if feed_proc.poll() is None:
+            feed_proc.terminate()
+        self.save(streaming=False)
+        if rc != 0 and time.monotonic() - began < BUSY_WITHIN:
+            log(f"camera unavailable: {err.splitlines()[-1] if err else f'ffmpeg exit {rc}'}")
+            self.tell_twin(event("busy", reason="busy or not found on the main PC"))
+            return
+        log(f"camera stream ended (ffmpeg exit {rc}) — retrying in 3 s")
+        time.sleep(3)
+        if self.wanted:
+            self.start()
+
+    def shutdown(self, *_):
+        self.wanted = False
+        self.stop()
+        self.save(linked=False, streaming=False)
+        os._exit(0)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="twin-camera", description="the main PC's camera as a webcam on the twin")
+    ap.add_argument("--watch", action="store_true", help="the twin side: keep the placeholder, report readers")
+    ap.add_argument("--feed", action="store_true", help="the twin side: decode the stream on stdin into the webcam")
+    ap.add_argument("--size", default=DEFAULTS["TWIN_CAMERA_SIZE"], help="picture size (WxH)")
+    ap.add_argument("--device", default=TWIN_DEVICE, help="the twin's virtual webcam")
+    ap.add_argument("--host", default=os.environ.get("TWIN_HOST") or "twin", help="ssh alias of the twin")
+    ap.add_argument("--selftest", action="store_true", help="is the service running and linked to the twin?")
+    ap.add_argument("--fresh", action="store_true", help="with --selftest: also fail (3) if it runs older code")
+    ap.add_argument("--watch-cmd", help=argparse.SUPPRESS)    # tests: run the twin side without ssh
+    ap.add_argument("--feed-cmd", help=argparse.SUPPRESS)
+    a = ap.parse_args(argv)
+    if not re.fullmatch(PATTERNS["TWIN_CAMERA_SIZE"], a.size):
+        ap.error(f"--size {a.size!r} is not WxH")
+    if a.watch:
+        return watch(a.device, a.size, sys.stdin.buffer, sys.stdout.buffer)
+    if a.feed:
+        return feed(a.device, a.size, sys.stdin.buffer)
+    if a.selftest:
+        return selftest(a.fresh)
+    try:
+        cfg = settings()
+    except ValueError as e:
+        log(str(e))
+        return 2
+    cam = Camera(a.host, cfg, shlex.split(a.watch_cmd) if a.watch_cmd else None,
+                 shlex.split(a.feed_cmd) if a.feed_cmd else None)
+    signal.signal(signal.SIGTERM, cam.shutdown)
+    cam.run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
