@@ -53,6 +53,8 @@ export default class TwinClipboard extends Extension {
             }
             this._in = new Gio.DataInputStream({base_stream: this._conn.get_input_stream()});
             this._out = this._conn.get_output_stream();
+            this._queue = [];
+            this._writing = false;
             this._send({kind: 'hello', role: 'extension'});
             this._readFrame();
         });
@@ -62,6 +64,8 @@ export default class TwinClipboard extends Extension {
         if (this._cancel.is_cancelled())
             return;
         this._conn = this._in = this._out = null;
+        this._queue = [];
+        this._writing = false;
         this._retryId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, RETRY_SECONDS, () => {
             this._retryId = null;
             this._connect();
@@ -74,14 +78,38 @@ export default class TwinClipboard extends Extension {
         this._retry();
     }
 
+    // Writes are queued and asynchronous: a blocking write would stall gnome-shell, and the whole desktop.
     _send(header, bytes) {
         if (!this._out)
             return;
-        try {
-            this._out.write_all(frame(header, bytes), null);
-        } catch (e) {
-            this._drop();
-        }
+        this._queue.push(new GLib.Bytes(frame(header, bytes)));
+        this._flush();
+    }
+
+    _flush() {
+        if (this._writing || !this._out || this._queue.length === 0)
+            return;
+        this._writing = true;
+        const out = this._out;
+        const bytes = this._queue[0];
+        out.write_bytes_async(bytes, GLib.PRIORITY_DEFAULT, this._cancel, (stream, res) => {
+            this._writing = false;
+            let written;
+            try {
+                written = stream.write_bytes_finish(res);
+            } catch (e) {
+                if (!this._cancel.is_cancelled() && out === this._out)
+                    this._drop();
+                return;
+            }
+            if (out !== this._out)
+                return;                                   // the connection was replaced meanwhile
+            if (written < bytes.get_size())
+                this._queue[0] = GLib.Bytes.new_from_bytes(bytes, written, bytes.get_size() - written);
+            else
+                this._queue.shift();
+            this._flush();
+        });
     }
 
     _offer() {
@@ -135,12 +163,12 @@ export default class TwinClipboard extends Extension {
 
     _handle(header, body) {
         if (header.kind === 'want')
-            this._transfer(header.mime);
+            this._transfer(header.mime, header.id);
         else if (header.kind === 'set')
             this._set(header.mime, body);
     }
 
-    _transfer(mime) {
+    _transfer(mime, id) {
         const out = Gio.MemoryOutputStream.new_resizable();
         this._selection.transfer_async(CLIPBOARD, mime, -1, out, this._cancel, (selection, res) => {
             try {
@@ -148,11 +176,11 @@ export default class TwinClipboard extends Extension {
                 out.close(null);
                 const bytes = out.steal_as_bytes().toArray();
                 if (bytes.length > DATA_LIMIT)
-                    this._send({kind: 'data', mime, over: bytes.length});
+                    this._send({kind: 'data', mime, id, over: bytes.length});
                 else
-                    this._send({kind: 'data', mime}, bytes);
+                    this._send({kind: 'data', mime, id}, bytes);
             } catch (e) {
-                this._send({kind: 'data', mime});        // the clipboard changed meanwhile: an empty answer
+                this._send({kind: 'data', mime, id});    // the clipboard changed meanwhile: an empty answer
             }
         });
     }

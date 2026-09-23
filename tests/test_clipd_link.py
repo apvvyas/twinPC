@@ -44,11 +44,14 @@ class LinkTests(unittest.TestCase):
         self.sock = self.run_dir / "twinpc" / "clip.sock"
         self.svc = None
 
+    def agent_cmd(self, stubs=None):
+        return (f"env PATH={stubs or self.stubs}:{os.environ['PATH']} CLIP_STATE={self.state} WAYLAND_DISPLAY=stub"
+                f" XDG_CACHE_HOME={self.twin_cache} {sys.executable} {CLIPD} --agent")
+
     def start(self, agent=None):
-        agent = agent or (f"env PATH={self.stubs}:{os.environ['PATH']} CLIP_STATE={self.state} WAYLAND_DISPLAY=stub"
-                          f" XDG_CACHE_HOME={self.twin_cache} {sys.executable} {CLIPD} --agent")
+        agent = agent or self.agent_cmd()
         env = {**os.environ, "XDG_RUNTIME_DIR": str(self.run_dir), "XDG_CACHE_HOME": str(self.main_cache),
-               "PATH": f"{self.stubs}:{os.environ['PATH']}"}
+               "PATH": f"{self.stubs}:{os.environ['PATH']}", "TWIN_CLIPD_RETRY": "0.5"}
         self.svc = subprocess.Popen([sys.executable, str(CLIPD), "--agent-cmd", agent], env=env,
                                     stderr=subprocess.DEVNULL)
         self.wait(self.sock.exists, "the service socket")
@@ -102,7 +105,7 @@ class LinkTests(unittest.TestCase):
         for _ in range(wants):
             h, _ = cd.read_frame(self.ext_in)
             self.assertEqual(h["kind"], "want")
-            self.ext.sendall(cd.encode("data", store[h["mime"]], mime=h["mime"]))
+            self.ext.sendall(cd.encode("data", store[h["mime"]], mime=h["mime"], id=h.get("id")))
 
     def assert_quiet(self):
         """Nothing more arrives at the extension (use last: a timed-out socket file can't be read again)."""
@@ -160,6 +163,64 @@ class LinkTests(unittest.TestCase):
         self.assertFalse(self.status()["twin"])
         self.ext.sendall(cd.encode("offer", mimes=["text/plain"]))
         self.assert_quiet()                    # no `want`: nothing is read, sent or queued
+
+    def test_twin_counts_as_connected_only_when_the_agent_answers(self):
+        self.start(agent=f"sh -c 'sleep 3; exec {self.agent_cmd()}'")
+        self.assertFalse(self.status()["twin"], "connected before the agent answered")
+        self.wait(lambda: self.status()["twin"], "the agent to connect")
+
+    def test_agent_exits_when_its_clipboard_watcher_dies(self):
+        dead = Path(self.tmp.name) / "dead-bin"
+        dead.mkdir()
+        (dead / "wl-paste").write_text(WL_PASTE.replace("--watch) last=;", "--watch) exit 1;"))
+        (dead / "wl-paste").chmod(0o755)
+        p = subprocess.Popen(["sh", "-c", self.agent_cmd(dead)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL)
+        try:
+            p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            self.fail("the agent kept running without a clipboard watcher")
+
+    def test_link_survives_a_bad_frame_from_the_twin(self):
+        starts = Path(self.tmp.name) / "starts"
+        fake = Path(self.tmp.name) / "fake_agent.py"
+        fake.write_text(
+            "import json, sys, time\n"
+            f"open({str(starts)!r}, 'a').write('x')\n"
+            "def frame(**h):\n"
+            "    sys.stdout.buffer.write(json.dumps({'v': 1, 'size': 0, 'sha': "
+            "'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', **h}).encode() + b'\\n')\n"
+            "    sys.stdout.flush()\n"
+            "frame(kind='hello')\nframe(kind='text')\ntime.sleep(30)\n")
+        self.start(agent=f"{sys.executable} {fake}")
+        self.wait(lambda: starts.exists() and len(starts.read_text()) >= 2, "the link to reconnect after a bad frame")
+
+    def test_a_stale_answer_after_a_newer_copy_is_ignored(self):
+        self.start()
+        self.wait(lambda: self.status()["twin"], "the agent to connect")
+        self.ext.sendall(cd.encode("offer", mimes=["image/png"]))
+        want1, _ = cd.read_frame(self.ext_in)
+        self.ext.sendall(cd.encode("offer", mimes=[cd.TEXT_MIME]))              # copied again meanwhile
+        self.ext.sendall(cd.encode("data", b"\x89PNG old", mime="image/png", id=want1.get("id")))
+        want2, _ = cd.read_frame(self.ext_in)
+        self.assertEqual(want2["mime"], cd.TEXT_MIME)
+        self.assertNotEqual(want2.get("id"), want1.get("id"))
+        self.ext.sendall(cd.encode("data", b"newer text", mime=cd.TEXT_MIME, id=want2.get("id")))
+        self.wait(lambda: self.twin_clipboard() == b"newer text", "the newer copy on the twin")
+
+    def test_received_files_are_not_echoed(self):
+        self.start()
+        self.wait(lambda: self.status()["twin"], "the agent to connect")
+        src = Path(self.tmp.name) / "src"
+        src.mkdir()
+        (src / "a.png").write_bytes(b"img")
+        self.twin_copy((src / "a.png").as_uri().encode() + b"\r\n", "text/uri-list")
+        h, body = cd.read_frame(self.ext_in)
+        stamp = (self.state / "stamp").read_text()
+        self.main_copy(["text/uri-list"], {"text/uri-list": body})     # GNOME reports the change it made
+        time.sleep(1)
+        self.assertEqual((self.state / "stamp").read_text(), stamp, "echoed back to the twin")
 
     def test_selftest(self):
         env = {**os.environ, "XDG_RUNTIME_DIR": str(self.run_dir)}

@@ -31,6 +31,16 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("'twinpc', 'clip.sock'", js)
         self.assertIn("role: 'extension'", js)
 
+    def test_writes_never_block_gnome_shell(self):
+        js = (EXT / "extension.js").read_text()
+        self.assertNotIn(".write_all(", js)          # a synchronous write stalls the whole desktop
+        self.assertIn("write_bytes_async", js)
+
+    def test_answers_carry_the_want_id(self):
+        js = (EXT / "extension.js").read_text()
+        self.assertIn("header.id", js)
+        self.assertRegex(js, r"kind: 'data', mime, id")
+
 
 if __name__ == "__main__":
     unittest.main()

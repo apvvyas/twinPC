@@ -28,6 +28,7 @@ LIMITS = {"text": 10 * MB, "image": 50 * MB, "files": 600 * MB, "data": 50 * MB,
 FILES_LIMIT = 500 * MB                  # the copied files themselves; the files frame allows tar overhead
 CONTROL = {"hello", "offer", "want"}    # no body
 CONTENT = ("text", "image", "files")    # what travels between the PCs
+WITH_MIME = {"text", "image", "data", "set"}
 TEXT_MIMES = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "STRING", "TEXT"]
 TEXT_MIME = TEXT_MIMES[0]
 URI_LIST = "text/uri-list"
@@ -35,7 +36,7 @@ GNOME_FILES = "x-special/gnome-copied-files"
 BROWSER_HINTS = ("text/x-moz-url", "text/html")    # a copied link also offers text/uri-list
 SECRET_HINT = "x-kde-passwordManagerHint"
 KEEP = 5
-RETRY = 10
+RETRY = float(os.environ.get("TWIN_CLIPD_RETRY") or 10)    # seconds between ssh attempts
 
 
 class FrameError(Exception):
@@ -72,6 +73,8 @@ def read_frame(stream):
         raise FrameError(f"unknown frame kind {kind!r}")
     if size > limit:
         raise FrameError(f"{kind} frame of {size} bytes is over its {limit}-byte limit")
+    if kind in WITH_MIME and not isinstance(h.get("mime"), str):
+        raise FrameError(f"{kind} frame without a mime type")
     body = bytearray()
     while len(body) < size:
         chunk = stream.read(size - len(body))
@@ -216,6 +219,18 @@ def pick(mimes, get):
     return kind, content, paths
 
 
+def echo_key(content, paths=None):
+    """What the echo guard compares: the content, and for files also each file's size and mtime —
+    browsers save every copied image under the same temp name, so the uri-list alone can repeat."""
+    if not paths:
+        return content
+    stats = []
+    for p in paths:
+        st = p.stat()
+        stats.append((str(p.resolve()), st.st_size, st.st_mtime_ns))
+    return content + b"\0" + repr(stats).encode()
+
+
 def build_frame(mimes, get, echo):
     """The frame to send for a clipboard offering `mimes`, or None (nothing new).
     Raises TooBig when the content is over its limit."""
@@ -223,7 +238,7 @@ def build_frame(mimes, get, echo):
     if picked is None:
         return None
     kind, content, paths = picked
-    if not echo.is_new(content):
+    if not echo.is_new(echo_key(content, paths)):
         return None
     if kind == "files":
         return encode("files", pack(paths), mime="application/x-tar")
@@ -233,10 +248,12 @@ def build_frame(mimes, get, echo):
 
 
 def incoming(h, body, cache):
-    """What to put on the clipboard for a received content frame: (mime, content)."""
+    """What to put on the clipboard for a received content frame: (mime, content, echo key)."""
     if h["kind"] == "files":
-        return URI_LIST, uri_list(unpack(body, cache))
-    return h["mime"], body
+        paths = unpack(body, cache)
+        content = uri_list(paths)
+        return URI_LIST, content, echo_key(content, file_paths(content))
+    return h["mime"], body, body
 
 
 def log(msg):
@@ -304,18 +321,25 @@ def agent(inp, out, cache):
 
     def watch():
         for _ in watcher.stdout:
+            mimes = wl_types()
             try:
-                frame = build_frame(wl_types(), wl_get, echo)
+                frame = build_frame(mimes, wl_get, echo)
             except TooBig as e:
                 too_big(e)
                 continue
-            except (subprocess.CalledProcessError, OSError):
+            except (subprocess.CalledProcessError, OSError) as e:
+                log(f"could not read the twin's clipboard: {e}")
                 continue
-            if frame:
-                try:
-                    send(frame)
-                except OSError:
-                    return
+            if frame is None:
+                log(f"not sent (a repeat, a secret or nothing usable): {mimes}")
+                continue
+            try:
+                send(frame)
+            except OSError:
+                return
+        # no watcher (the desktop session ended or isn't up yet): exit, so the main PC reconnects
+        log("the clipboard watcher stopped — exiting")
+        os._exit(1)
 
     threading.Thread(target=watch, daemon=True).start()
     try:
@@ -325,11 +349,11 @@ def agent(inp, out, cache):
                 send(encode("hello"))
             elif h["kind"] in CONTENT:
                 try:
-                    mime, content = incoming(h, body, cache)
+                    mime, content, key = incoming(h, body, cache)
                 except (tarfile.TarError, OSError) as e:
                     notify(f"files from the main PC were not accepted: {e}")
                     continue
-                echo.mark(content)
+                echo.mark(key)
                 wl_set(mime, content)
         return 0
     except FrameError as e:
@@ -355,6 +379,7 @@ class Service:
         self.twin_write, self.ext_write = threading.Lock(), threading.Lock()
         self.twin = self.ext = None
         self.last = "nothing yet"
+        self.wants = 0                                     # numbers each want, so late answers are recognised
 
     def serve(self):
         self.sock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -369,19 +394,27 @@ class Service:
             threading.Thread(target=self.client, args=(conn,), daemon=True).start()
 
     def note(self, what):
+        log(what)
         with self.state:
             self.last = f"{time.strftime('%H:%M:%S')} {what}"
 
     def twin_loop(self):
         while True:
             p = subprocess.Popen(self.agent_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-            with self.state:
-                self.twin = p.stdin
             try:
+                p.stdin.write(encode("hello"))
+                p.stdin.flush()
                 while (frame := read_frame(p.stdout)) is not None:
-                    self.from_twin(*frame)
+                    if frame[0]["kind"] == "hello":            # the agent is up and watching its clipboard
+                        with self.state:
+                            self.twin = p.stdin
+                        log("connected to the twin")
+                    else:
+                        self.from_twin(*frame)
             except FrameError as e:
                 log(f"from the twin: {e}")
+            except Exception as e:                            # never let one bad frame end the link for good
+                log(f"twin link failed: {e!r}")
             finally:
                 with self.state:
                     self.twin = None
@@ -393,11 +426,11 @@ class Service:
         if h["kind"] not in CONTENT:
             return
         try:
-            mime, content = incoming(h, body, self.cache)
+            mime, content, key = incoming(h, body, self.cache)
         except (tarfile.TarError, OSError) as e:
             notify(f"files from the twin were not accepted: {e}")
             return
-        self.echo.mark(content)
+        self.echo.mark(key)
         self.note(f"twin → this PC ({h['kind']})")
         with self.state:
             ext = self.ext
@@ -444,19 +477,24 @@ class Service:
             return None                                # twin away: dropped, not queued
 
         def get(mime):
+            self.wants += 1
+            want = self.wants
             with self.ext_write:
-                conn.sendall(encode("want", mime=mime))
-            frame = read_frame(stream)
-            if frame is None:
-                raise OSError("the extension went away")
-            h, body = frame
-            if h["kind"] == "offer":
-                raise Newer(h.get("mimes", []))
-            if h["kind"] != "data":
-                raise FrameError(f"expected data, got {h['kind']!r}")
-            if h.get("over"):
-                raise TooBig(h["over"])
-            return body
+                conn.sendall(encode("want", mime=mime, id=want))
+            while True:
+                frame = read_frame(stream)
+                if frame is None:
+                    raise OSError("the extension went away")
+                h, body = frame
+                if h["kind"] == "offer":
+                    raise Newer(h.get("mimes", []))
+                if h["kind"] != "data":
+                    raise FrameError(f"expected data, got {h['kind']!r}")
+                if h.get("id") != want:
+                    continue                                   # a late answer to an older want
+                if h.get("over"):
+                    raise TooBig(h["over"])
+                return body
 
         try:
             frame = build_frame(mimes, get, self.echo)
@@ -466,6 +504,7 @@ class Service:
             too_big(e)
             return None
         if frame is None:
+            log(f"not sent (a repeat, a secret or nothing usable): {mimes}")
             return None
         try:
             with self.twin_write:

@@ -1,6 +1,7 @@
 import importlib.machinery
 import importlib.util
 import io
+import os
 import tarfile
 import tempfile
 import unittest
@@ -161,10 +162,13 @@ class FilesTests(unittest.TestCase):
         self.assertEqual(cd.uri_list([p]), (p.resolve().as_uri() + "\r\n").encode())
 
     def test_incoming(self):
-        self.assertEqual(cd.incoming({"kind": "text", "mime": cd.TEXT_MIME}, b"hi", self.d), (cd.TEXT_MIME, b"hi"))
-        mime, content = cd.incoming({"kind": "files"}, tar_of(member("n.txt", b"n")), self.d / "c")
+        self.assertEqual(cd.incoming({"kind": "text", "mime": cd.TEXT_MIME}, b"hi", self.d),
+                         (cd.TEXT_MIME, b"hi", b"hi"))
+        mime, content, key = cd.incoming({"kind": "files"}, tar_of(member("n.txt", b"n")), self.d / "c")
         self.assertEqual(mime, "text/uri-list")
         self.assertEqual(content, cd.uri_list([self.d / "c" / "1" / "n.txt"]))
+        # the clipboard's re-offer of what was just set must look like a repeat
+        self.assertEqual(key, cd.echo_key(content, cd.file_paths(content)))
 
 
 class BuildFrameTests(unittest.TestCase):
@@ -190,6 +194,17 @@ class BuildFrameTests(unittest.TestCase):
             h, body = self.frame(["text/uri-list"], {"text/uri-list": f.as_uri().encode()})
             self.assertEqual(h["kind"], "files")
             self.assertEqual(tarfile.open(fileobj=io.BytesIO(body)).getnames(), ["x.txt"])
+
+    def test_same_file_name_with_new_content_is_sent_again(self):
+        # browsers save every copied image to the same temp name (e.g. "viewPhoto")
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d, "viewPhoto")
+            f.write_bytes(b"first image")
+            e, store = cd.Echo(), {"text/uri-list": f.as_uri().encode()}
+            self.assertIsNotNone(self.frame(["text/uri-list"], store, e))
+            f.write_bytes(b"second, different image")
+            os.utime(f, ns=(f.stat().st_atime_ns, f.stat().st_mtime_ns + 10**9))
+            self.assertIsNotNone(self.frame(["text/uri-list"], store, e), "treated as a repeat")
 
     def test_image(self):
         h, body = self.frame(["image/png", "text/html"], {"image/png": b"\x89PNG"})
