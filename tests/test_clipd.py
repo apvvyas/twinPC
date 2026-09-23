@@ -206,6 +206,25 @@ class BuildFrameTests(unittest.TestCase):
             os.utime(f, ns=(f.stat().st_atime_ns, f.stat().st_mtime_ns + 10**9))
             self.assertIsNotNone(self.frame(["text/uri-list"], store, e), "treated as a repeat")
 
+    def test_a_file_list_that_is_not_ready_yet_is_read_again(self):
+        # right after the clipboard changes, Nautilus can answer the first file-list read with nothing
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d, "second.jpeg")
+            f.write_bytes(b"jpeg")
+            answers = {"text/uri-list": [b"", f.as_uri().encode()], "text/plain;charset=utf-8": [str(f).encode()]}
+            got = cd.build_frame(["text/uri-list", "text/plain;charset=utf-8"],
+                                 lambda m: answers[m].pop(0), cd.Echo())
+            self.assertEqual(cd.read_frame(io.BytesIO(got))[0]["kind"], "files")
+
+    def test_the_other_file_type_is_tried_before_text(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d, "second.jpeg")
+            f.write_bytes(b"jpeg")
+            store = {"text/uri-list": b"", "x-special/gnome-copied-files": b"copy\n" + f.as_uri().encode(),
+                     "text/plain;charset=utf-8": str(f).encode()}
+            got = cd.build_frame(list(store), lambda m: store[m], cd.Echo())
+            self.assertEqual(cd.read_frame(io.BytesIO(got))[0]["kind"], "files")
+
     def test_image(self):
         h, body = self.frame(["image/png", "text/html"], {"image/png": b"\x89PNG"})
         self.assertEqual((h["kind"], h["mime"], body), ("image", "image/png", b"\x89PNG"))

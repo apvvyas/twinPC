@@ -198,6 +198,25 @@ def uri_list(paths):
     return "".join(p.resolve().as_uri() + "\r\n" for p in paths).encode()
 
 
+def read_files(mimes, get, first):
+    """(content, paths) of a copied-files clipboard. Right after the clipboard changes a file manager
+    can answer with nothing yet, so an empty read is retried, trying each file type it offers."""
+    content, paths = first, file_paths(first)
+    if paths is not None or first.strip():
+        return content, paths                          # local files, or real links (text is right)
+    for attempt in range(3):
+        if paths is not None:
+            break
+        for mime in (m for m in (URI_LIST, GNOME_FILES) if m in mimes):
+            if attempt or mime != (URI_LIST if URI_LIST in mimes else GNOME_FILES):
+                content = get(mime)
+                paths = file_paths(content)
+                if paths is not None or content.strip():
+                    return content, paths               # local files, or real links (text is right)
+        time.sleep(0.2)
+    return content, paths
+
+
 def pick(mimes, get):
     """(kind, content, paths) for a clipboard offering `mimes`, reading types with `get(mime)`.
     None when there is nothing to send: nothing useful, a secret, or empty content."""
@@ -207,7 +226,7 @@ def pick(mimes, get):
     kind, mime = choice
     content, paths = get(mime), None
     if kind == "files":
-        paths = file_paths(content)
+        content, paths = read_files(mimes, get, content)
         if paths is None:                              # web links, not local files: send them as text
             choice = text_choice(mimes)
             if choice is None:
