@@ -11,7 +11,7 @@ One ethernet cable. No cloud, no cluster, no new habits.
 ![Bash](https://img.shields.io/badge/Bash-5.x-4EAA25?logo=gnubash&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![AMD ROCm](https://img.shields.io/badge/AMD-ROCm-ED1C24?logo=amd&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-54%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-214%20passing-brightgreen)
 
 [Features](#-features) · [How it works](#-how-it-works) · [Quick start](#-quick-start) · [Commands](#-command-cheat-sheet) · [Configuration](#%EF%B8%8F-configuration) · [Troubleshooting](#-troubleshooting)
 
@@ -54,7 +54,6 @@ PC**, and it shuts down with you — unless a job is still running.
 ### 🖱️ One desk, two computers
 Push the mouse off your screen's edge onto the twin's monitor. No monitor on the twin?
 **Super+F12** shows its desktop fullscreen.
-**Copy on one PC, paste on the other** — text, images and files.
 
 </td>
 <td valign="top">
@@ -76,8 +75,24 @@ with a full manual (`man twin`).
 <td valign="top">
 
 ### 🔒 Private by design
-Everything runs **over a direct cable**, and jobs, audio and the remote desktop travel
-**inside SSH** — no cloud service, no open remote-desktop or audio ports.
+Everything runs **over a direct cable**, and jobs, audio, the clipboard and the remote desktop
+travel **inside SSH** — no cloud service, no open remote-desktop or audio ports.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 📋 Shared clipboard
+**Copy on one PC, paste on the other** — text, images and files (up to 500 MB), both ways,
+automatically. Password-manager secrets are never sent; `twin clip off` pauses it.
+
+</td>
+<td valign="top">
+
+### 🧰 One-command setup
+`tool/twinpc detect` finds both machines' distro, desktop, GPU and network; `install`
+sets everything up step by step (safe to re-run); `doctor` shows ✅ / ⚠️ / ❌ per feature.
 
 </td>
 </tr>
@@ -109,7 +124,7 @@ flowchart LR
         H --> R{"twin-route<br/>rules + load"}
         R -- "local" --> L["runs here"]
         R -- "twin" --> X["twin-exec"]
-        S["systemd user services<br/>wake · unlock · audio · mount"]
+        S["systemd user services<br/>wake · unlock · audio · mount · clipboard"]
     end
     subgraph TWIN["⚡ Twin PC (GPU)"]
         TM["tmux task session"] --> W["window on workspace 9"]
@@ -117,7 +132,7 @@ flowchart LR
     end
     X == "SSH over the cable" ==> TM
     TM -. "live output, exit code" .-> T
-    S == "Wake-on-LAN · disk unlock · PipeWire · sshfs" ==> TWIN
+    S == "Wake-on-LAN · disk unlock · PipeWire · sshfs · clipboard" ==> TWIN
 ```
 
 **The routing rules, in plain words:**
@@ -283,14 +298,17 @@ main/                                main-PC services and settings · main/insta
 tool/                                twinpc: probe, profile, step engine, platform adapters, features
 clip/                                clipboard sharing — twin-clipd service/agent and the GNOME extension
 twinpc/                              files installed on the twin (PipeWire output, lan-mouse unit, PyTorch script)
-tests/                               54 unit & integration tests + system checks
+tests/                               214 unit & integration tests + system checks
 docs/                                design notes
 ```
 
 ## 🧪 Tests
 
 ```bash
-python3 -m unittest tests.test_twin_route tests.test_hook   # fast, local
+python3 -m unittest tests.test_twin_route tests.test_hook tests.test_clipd tests.test_clipd_link \
+  tests.test_clip_extension tests.tool.test_probe tests.tool.test_profile tests.tool.test_steps \
+  tests.tool.test_adapters tests.tool.test_features tests.tool.test_cli tests.tool.test_review_fixes \
+  tests.tool.test_clipboard                                 # fast, local
 python3 -m unittest tests.test_twin_exec                    # needs the twin running
 for t in tests/*.sh; do bash "$t"; done                     # system checks
 ```
