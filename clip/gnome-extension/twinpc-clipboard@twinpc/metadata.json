@@ -1,0 +1,6 @@
+{
+  "uuid": "twinpc-clipboard@twinpc",
+  "name": "twinPC clipboard",
+  "description": "Shares the clipboard with the twin PC through twin-clipd (part of twinPC).",
+  "shell-version": ["50"]
+}
