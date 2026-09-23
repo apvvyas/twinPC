@@ -1,0 +1,10 @@
+[Unit]
+Description=Check every 20 s whether twin has a monitor (mouse sharing on/off)
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=20s
+AccuracySec=2s
+
+[Install]
+WantedBy=timers.target

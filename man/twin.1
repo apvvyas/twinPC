@@ -232,8 +232,10 @@ Bluetooth). The user service
 on this PC forwards its PipeWire socket over SSH to the twin's 127.0.0.1:4713 \(em no
 port is opened on this PC \(em and the twin has a "Main PC speakers" output
 .RI ( ~/.config/pipewire/pipewire.conf.d/main-pc-speakers.conf )
-that reconnects every 5 s. Copies of both are in
-.IR ~/projects/twinPC/audio/ .
+that reconnects every 5 s. Both are part of the project:
+.I main/twin-audio.service
+and
+.IR twinpc/main-pc-speakers.conf .
 .TP
 .BR "audio " [ on | off | status | test ]
 .B on
@@ -428,6 +430,14 @@ Undo with
 .PP
 The RX\ 6600 has 8\ GB VRAM: models up to ~8B parameters at Q4 fit fully on the
 GPU; larger ones spill onto the CPU and get much slower.
+.SH FILES
+.TP
+.I ~/projects/twinPC
+The project: this command, the task router, both machines' configuration and their
+installers. Its
+.I README.md
+explains setting everything up from scratch
+.RB ( "main/install.sh" " on this PC, " "twinpc/install.sh" " on the twin)."
 .SH SEE ALSO
 .BR ssh (1),
 .BR tmux (1),

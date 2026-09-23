@@ -1,0 +1,13 @@
+[remmina]
+name=twin
+group=twinPC
+protocol=VNC
+server=127.0.0.1:5901
+viewmode=4
+scale=1
+colordepth=32
+quality=9
+showcursor=0
+disableclipboard=0
+keyboard_grab=0
+disableencryption=1

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Twin PC unlock prompt
+Comment=Opens a terminal to enter the twin PC's disk password when it is waiting at boot
+Exec=@HOME@/.local/bin/twin link prompt
+X-GNOME-Autostart-enabled=true
+NoDisplay=true

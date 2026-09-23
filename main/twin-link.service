@@ -1,0 +1,13 @@
+[Unit]
+Description=Wake the twin PC at boot, power it off at shutdown (unless jobs are running)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/.local/bin/twin link start
+ExecStop=%h/.local/bin/twin link stop
+TimeoutStartSec=90
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

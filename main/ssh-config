@@ -1,0 +1,17 @@
+Host twin
+    HostName 10.42.0.11
+    User appspubs
+    IdentityFile ~/.ssh/id_ed25519
+    ServerAliveInterval 30
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 10m
+
+Host twin-unlock
+    HostName 10.42.0.11
+    User root
+    IdentityFile ~/.ssh/id_ed25519
+    UserKnownHostsFile ~/.ssh/known_hosts.twin-unlock
+    StrictHostKeyChecking accept-new
+    ControlMaster no
+    ConnectTimeout 3

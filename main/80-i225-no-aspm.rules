@@ -1,0 +1,2 @@
+# Intel I225-V (igc): PCIe L1 power saving causes "Data Link Layer Timeout" errors and TX hangs
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x8086", ATTR{device}=="0x15f3", ATTR{link/l1_aspm}="0"
