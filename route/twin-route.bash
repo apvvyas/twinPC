@@ -4,6 +4,8 @@
 [[ $- == *i* ]] || return 0
 
 _TR_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+# the twin's address from the twinpc profile (read in a subshell: no variables leak into this shell)
+_TR_ADDR=${TWIN_ADDR:-$(f=${XDG_CONFIG_HOME:-$HOME/.config}/twinpc/profile.env; [[ -f $f ]] && . "$f"; echo "${TWIN_ADDR:-10.42.0.11}")}
 _TR_ORIG=""   # typed line whose rewritten form must be replaced in history
 _TR_ADD=""    # typed line to add to history when nothing was executed (cancel / refused)
 
@@ -13,7 +15,7 @@ _twin_route_stage() {
   local cache=${XDG_RUNTIME_DIR:-/tmp}/twin-route.stage now t st b
   printf -v now '%(%s)T' -1
   if [[ -f $cache ]] && read -r t st < "$cache" && (( now - t < 5 )); then echo "$st"; return; fi
-  b=$(timeout 1.5 bash -c 'exec 3<>/dev/tcp/10.42.0.11/22 && head -c 64 <&3' 2>/dev/null | tr -d '\r' | head -1)
+  b=$(timeout 1.5 bash -c 'exec 3<>/dev/tcp/$0/22 && head -c 64 <&3' "$_TR_ADDR" 2>/dev/null | tr -d '\r' | head -1)
   case $b in *dropbear*) st=unlock ;; SSH-*) st=up ;; *) st=off ;; esac
   echo "$now $st" > "$cache"; echo "$st"
 }

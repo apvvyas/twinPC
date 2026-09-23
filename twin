@@ -4,7 +4,11 @@
 set -euo pipefail
 
 # Machine-specific settings (TWIN_MAC, TWIN_IFACE, …) live outside the repo; see README "Configuration".
-[[ -f ${XDG_CONFIG_HOME:-$HOME/.config}/twinpc/config ]] && . "${XDG_CONFIG_HOME:-$HOME/.config}/twinpc/config"
+# twinpc's detected profile first, then the user's own overrides
+for _f in "${XDG_CONFIG_HOME:-$HOME/.config}/twinpc/profile.env" "${XDG_CONFIG_HOME:-$HOME/.config}/twinpc/config"; do
+  [[ -f $_f ]] && . "$_f"
+done
+TWIN_ADDR=${TWIN_ADDR:-10.42.0.11}
 HOST=${TWIN_HOST:-twin}
 TWIN_MAC=${TWIN_MAC:-}                       # twin's wired MAC (Wake-on-LAN) — set it in the config file
 TWIN_BCAST=${TWIN_BCAST:-10.42.0.255}        # broadcast address of the LAN link
@@ -72,7 +76,7 @@ VNC_PORT=${TWIN_VNC_PORT:-5901}              # local end of the SSH tunnel to tw
 # What is answering on twin's port 22?  prints: up | unlock | off
 stage() {
   local b
-  b=$(timeout 3 bash -c 'exec 3<>/dev/tcp/10.42.0.11/22 && head -c 64 <&3' 2>/dev/null | tr -d '\r' | head -1)
+  b=$(timeout 3 bash -c 'exec 3<>/dev/tcp/$0/22 && head -c 64 <&3' "$TWIN_ADDR" 2>/dev/null | tr -d '\r' | head -1)
   case $b in
     *dropbear*) echo unlock ;;   # initramfs SSH waiting for the disk password
     SSH-*)      echo up ;;
@@ -199,7 +203,7 @@ case "$cmd" in
   pkill)   ssh "$HOST" "pkill -f $(q "${1:?pattern}") && echo killed || echo '(none matched)'" ;;
   push)    rsync -avz --progress "${1:?local path}" "$HOST:${2:-work/}" ;;
   pull)    rsync -avz --progress "$HOST:${1:?remote path}" "${2:-.}" ;;
-  models)  curl -s http://10.42.0.11:11434/api/tags | python3 -c 'import sys,json; [print("%-40s %.1f GB" % (m["name"], m["size"]/1e9)) for m in json.load(sys.stdin)["models"]]' ;;
+  models)  curl -s "http://$TWIN_ADDR:11434/api/tags" | python3 -c 'import sys,json; [print("%-40s %.1f GB" % (m["name"], m["size"]/1e9)) for m in json.load(sys.stdin)["models"]]' ;;
   sh)      if [[ $# -gt 0 ]]; then rsh "$*"; else ssh -t "$HOST"; fi ;;
   desktop|vnc)
     # Twin's desktop fullscreen on this PC (headless twin, or just to see it here). Run again to close it.
@@ -335,7 +339,7 @@ else:
     if ssh -o ConnectTimeout=2 -o BatchMode=yes "$HOST" true 2>/dev/null; then
       ssh "$HOST" 'echo "twin is UP — $(uptime -p)"'
     elif [[ $(stage) == unlock ]]; then echo "twin is waiting for its disk password — run: twin unlock"
-    elif ping -c1 -W1 10.42.0.11 >/dev/null 2>&1; then echo "twin answers ping but SSH is down (booting?)"
+    elif ping -c1 -W1 "$TWIN_ADDR" >/dev/null 2>&1; then echo "twin answers ping but SSH is down (booting?)"
     else echo "twin is OFF (or unreachable) — start it with: twin wake"; fi
     ;;
   unlock-screen)

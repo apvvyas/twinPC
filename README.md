@@ -143,13 +143,11 @@ sudo pacman -S --needed openssh && sudo systemctl enable --now sshd && sudo ufw 
 git clone https://github.com/<you>/twinPC ~/projects/twinPC && cd ~/projects/twinPC
 ssh-copy-id <twin-user>@10.42.0.11
 
-# 3 · set up the twin (asks for the twin's sudo password), then reboot it
-scp -r twinpc <twin-user>@10.42.0.11:twinpc-setup
-ssh -t <twin-user>@10.42.0.11 'sudo bash ~/twinpc-setup/install.sh && sudo reboot'
-
-# 4 · set up the main PC
-mkdir -p ~/.config/twinpc && printf 'TWIN_USER=<twin-user>\nTWIN_MAC=<twin-mac>\n' > ~/.config/twinpc/config
-bash main/install.sh
+# 3 · on the main PC: detect both machines, see the plan, install, check
+tool/twinpc detect
+tool/twinpc install --dry-run
+tool/twinpc install          # asks for sudo on each machine once; the BIOS step asks you to confirm
+tool/twinpc doctor
 ```
 
 Open a new terminal and try `twin status` → `ollama run gemma3:4b hi` 🎉
@@ -177,31 +175,17 @@ Open a new terminal and try `twin status` → `ollama run gemma3:4b hi` 🎉
 On ASUS boards: **Advanced → APM Configuration** → *ErP Ready* = Disabled,
 *Power On By PCI-E* = Enabled. Optional: *Restore AC Power Loss* = Power On.
 
-### 3. Set up the twin
+### 3. Install from the main PC
 ```bash
-scp -r twinpc <twin-user>@<twin-ip>:twinpc-setup
-ssh <twin-user>@<twin-ip>
-sudo bash ~/twinpc-setup/install.sh        # packages, Ollama (ROCm), Wake-on-LAN, GUI tools, remote unlock
-bash ~/twinpc-setup/setup-ai-env.sh        # optional: PyTorch for ROCm in ~/ai-env (~4 GB)
-sudo reboot
+cd ~/projects/twinPC
+tool/twinpc detect            # probes both machines → ~/.config/twinpc/profile.toml (edit it if a value is wrong)
+tool/twinpc install --dry-run # what would change
+tool/twinpc install           # everything, or name features: tool/twinpc install gpu-stack kvm
+tool/twinpc doctor            # ✅ / ⚠️ / ❌ per feature
 ```
-Each step in `twinpc/` is a separate script and can be re-run safely.
-
-### 4. Set up the main PC
-```bash
-sudo apt install sshfs remmina             # or your distribution's equivalent
-mkdir -p ~/.config/twinpc
-cat > ~/.config/twinpc/config <<'EOF'
-TWIN_USER=<twin-user>                      # your user on the twin
-TWIN_MAC=<twin-mac-address>                # twin's wired MAC, for Wake-on-LAN (ip link on the twin)
-EOF
-bash ~/projects/twinPC/main/install.sh
-```
-The installer needs no `sudo`, only writes files whose content differs and can be re-run any
-time. It sets up the `twin` command and manual, SSH aliases, user services, the Super+F12
-shortcut, lan-mouse on both machines, the twin's audio output and the task-routing hook. If your
-wired card is an Intel I225-V, it also prints an optional `sudo` command that stops that card
-from hanging.
+`install` skips steps that are already done, stops at the first failure with the reason, and asks for
+`sudo` at most once per machine. Features your platform doesn't support yet are skipped with the reason.
+Optional GPU PyTorch is part of the `gpu-stack` feature (~4 GB download).
 
 </details>
 
@@ -223,8 +207,9 @@ Full reference: **`man twin`**.
 
 ## ⚙️ Configuration
 
-Machine settings live in **`~/.config/twinpc/config`** (plain `NAME=value` lines); routing rules
-live in **`~/.config/twin-route/rules.toml`**.
+`tool/twinpc detect` writes what it finds to **`~/.config/twinpc/profile.toml`** (edit it if a value
+is wrong). Settings you want to force go in **`~/.config/twinpc/config`** (plain `NAME=value` lines,
+which win over the profile); routing rules live in **`~/.config/twin-route/rules.toml`**.
 
 | Setting | Where | Default |
 |---|---|---|
@@ -285,7 +270,8 @@ The twin is off or the mount dropped: `twin wake`, or `systemctl --user restart 
 twin · twin-completion.bash · man/   the twin command, tab completion and manual
 route/                               automatic task routing — router, rules, runner, bash hook
 main/                                main-PC services and settings · main/install.sh
-twinpc/                              twin setup scripts · twinpc/install.sh · setup-ai-env.sh
+tool/                                twinpc: probe, profile, step engine, platform adapters, features
+twinpc/                              files installed on the twin (PipeWire output, lan-mouse unit, PyTorch script)
 tests/                               54 unit & integration tests + system checks
 docs/                                design notes
 ```
