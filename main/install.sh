@@ -21,7 +21,12 @@ mandb -q ~/.local/share/man 2>/dev/null || true
 
 echo "== ssh aliases (twin, twin-unlock)"
 touch ~/.ssh/config; chmod 600 ~/.ssh/config
-grep -q '^Host twin$' ~/.ssh/config || { printf '\n' >> ~/.ssh/config; cat "$M/ssh-config" >> ~/.ssh/config; changed+=(~/.ssh/config); }
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}/twinpc/config
+[[ -f $CONF ]] && . "$CONF"
+if ! grep -q '^Host twin$' ~/.ssh/config; then
+  [[ -n ${TWIN_USER:-} ]] || { echo "set TWIN_USER (your user on the twin) in $CONF"; exit 1; }
+  { printf '\n'; sed "s|@TWIN_USER@|$TWIN_USER|" "$M/ssh-config"; } >> ~/.ssh/config; changed+=(~/.ssh/config)
+fi
 ssh -o BatchMode=yes -o ConnectTimeout=5 twin true || { echo "cannot reach twin with a key — see README 'First-time setup'"; exit 1; }
 
 echo "== shell: Ollama on twin + tab completion"
@@ -73,7 +78,7 @@ fp() { openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr 'A-F' 'a-f'; 
 FP_MAIN=$(fp < ~/.config/lan-mouse/lan-mouse.pem)
 FP_TWIN=$(ssh twin 'cat ~/.config/lan-mouse/lan-mouse.pem' | fp)
 put_text ~/.config/lan-mouse/config.toml <<EOF
-# lan-mouse on the MAIN PC — twin's monitor sits to the LEFT of the LG.
+# lan-mouse on the MAIN PC — twin's monitor sits to the LEFT of the main monitor.
 # Release keys (get the mouse back if ever stuck on twin): Ctrl+Shift+Super+Alt
 port = 4242
 
@@ -90,7 +95,7 @@ EOF
 echo "== twin: user-level pieces (audio output, lan-mouse, stay awake)"
 tmp=$(mktemp -d)
 cat > "$tmp/lm.toml" <<EOF
-# lan-mouse on TWIN — the main PC's LG monitor sits to the RIGHT of this screen.
+# lan-mouse on TWIN — the main PC's monitor sits to the RIGHT of this screen.
 port = 4242
 
 [authorized_fingerprints]

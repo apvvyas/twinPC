@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# twinpc/setup-ai-env.sh — PyTorch on the twin's RX 6600 (ROCm) in ~/ai-env. Run ON THE TWIN as the
+# twinpc/setup-ai-env.sh — PyTorch on the twin's AMD GPU (ROCm) in ~/ai-env. Run ON THE TWIN as the
 # desktop user (no sudo); `twin run` jobs put ~/ai-env/bin first on PATH. ~4 GB download.
 set -euo pipefail
 export PATH=$HOME/.local/share/mise/shims:$PATH UV_HTTP_TIMEOUT=900

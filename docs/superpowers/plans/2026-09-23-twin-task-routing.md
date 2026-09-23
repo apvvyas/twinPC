@@ -24,7 +24,7 @@
 - Notification (`notify-send`) when a routed task ran > 60 s.
 - Kill switch: `TWIN_ROUTE=off` (per shell) or `twin route off|on` (flag file `${XDG_CONFIG_HOME:-~/.config}/twin-route/disabled`).
 - Hyprland dispatch on twin is Lua: `hyprctl dispatch 'hl.dsp.<fn>(...)'`.
-- Git author for this repo: `apoorv-vyas <apvvyas@gmail.com>`; every commit message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Every commit message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Deviation from spec (improvement): the CPU sampler runs as a user systemd service (`twin-route-load.service`) instead of being spawned by the hook — same output file, no duplicate-instance handling needed.
 
 ## Review Focus
@@ -57,7 +57,6 @@
 
 ```bash
 cd ~/projects/twinPC
-git config user.name "apoorv-vyas" && git config user.email "apvvyas@gmail.com"
 git add twin twin-completion.bash man/twin.1
 git commit -m "chore: track existing twin CLI, completion and man page
 
@@ -681,7 +680,7 @@ In `usage()`, after the `twin kill <name>` line add:
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `bash tests/test_viewer.sh`
-Expected: `PASS viewer on ws 9, focus stayed on <n>`. If the window does not appear, run `twin gui hypr dispatch 'hl.dsp.exec_cmd("[workspace 9 silent] foot")'` by hand (this form was verified on twin) and check whether `$HOME` expanded inside `exec_cmd` — if not, replace `\$HOME/.local/bin/twin-task-view` with `/home/appspubs/.local/bin/twin-task-view`.
+Expected: `PASS viewer on ws 9, focus stayed on <n>`. If the window does not appear, run `twin gui hypr dispatch 'hl.dsp.exec_cmd("[workspace 9 silent] foot")'` by hand (this form was verified on twin) and check whether `$HOME` expanded inside `exec_cmd` — if not, replace `\$HOME/.local/bin/twin-task-view` with `<twin-home>/.local/bin/twin-task-view`.
 
 - [ ] **Step 6: Commit**
 
@@ -755,7 +754,7 @@ class TwinExecTests(unittest.TestCase):
     def test_quoting_and_comment(self):
         line = """echo "home=$HOME" 'a  b' no*match* ; echo tail # trailing comment"""
         p = subprocess.run([EXEC, "--", line], capture_output=True, text=True, timeout=60, cwd="/tmp")
-        self.assertIn("home=/home/appspubs", p.stdout)          # $HOME expanded on twin
+        self.assertIn(f"home={TWIN_HOME}", p.stdout)          # $HOME expanded on twin
         self.assertIn("a  b", p.stdout)
         self.assertIn("no*match*", p.stdout)
         self.assertIn("tail", p.stdout)
@@ -763,7 +762,7 @@ class TwinExecTests(unittest.TestCase):
 
     def test_runs_in_twin_home_outside_workspace(self):
         p = subprocess.run([EXEC, "--", "pwd"], capture_output=True, text=True, timeout=60, cwd="/tmp")
-        self.assertIn("/home/appspubs", p.stdout)
+        self.assertIn(TWIN_HOME, p.stdout)
 
     def test_fast_command_output_in_tty(self):
         code, out = run_pty([EXEC, "--", "echo fast-output-marker"])

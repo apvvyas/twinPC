@@ -76,8 +76,6 @@ Replace the `<placeholders>` with your own values.
    git clone https://github.com/<you>/twinPC ~/projects/twinPC
    ssh-copy-id <twin-user>@<twin-ip>
    ```
-5. Edit `main/ssh-config` — set `User` to `<twin-user>` (and `HostName` if your twin's address
-   differs) — before running the main installer.
 
 ### 2. Twin BIOS
 
@@ -102,8 +100,8 @@ sudo reboot
 sudo apt install sshfs remmina             # or your distribution's equivalent
 mkdir -p ~/.config/twinpc
 cat > ~/.config/twinpc/config <<'EOF'
+TWIN_USER=<twin-user>                      # your user on the twin (used for the ssh alias)
 TWIN_MAC=<twin-mac-address>                # twin's wired MAC, for Wake-on-LAN (ip link on the twin)
-TWIN_IFACE=<main-pc-wired-interface>       # e.g. enp3s0 (ip -br link on this PC)
 EOF
 bash ~/projects/twinPC/main/install.sh
 ```
@@ -150,9 +148,11 @@ Machine-specific settings go in `~/.config/twinpc/config` (plain `NAME=value` li
 | Which commands run on the twin | `~/.config/twin-route/rules.toml` (`always_twin`, `never_twin`, `load_offload`, `needs_cwd`) | GPU/AI tools on the twin |
 | Load thresholds | `rules.toml` `[load]` | CPU 80 %, RAM 85 % |
 | Shared workspace | `rules.toml` `[workspace]` | `~/twin` ⇄ twin `~/work` |
+| Your user on the twin | `TWIN_USER` (config file) | — set it |
 | SSH host alias | `TWIN_HOST` (config file) | `twin` |
 | Twin's MAC (Wake-on-LAN) | `TWIN_MAC` (config file) | — set it |
-| Broadcast address / wired interface | `TWIN_BCAST`, `TWIN_IFACE` (config file) | `10.42.0.255`, set `TWIN_IFACE` |
+| Broadcast address / this PC's wired port | `TWIN_BCAST`, `TWIN_IFACE` (config file) | `10.42.0.255`, auto-detected |
+| The twin's wired port (for its setup scripts) | `TWIN_WIRED_IF` (environment, on the twin) | auto-detected |
 | Headless virtual screen size | `TWIN_HEADLESS_MODE` (config file) | `2560x1080@60` |
 | Local port for the remote desktop | `TWIN_VNC_PORT` (config file) | `5901` |
 | Extra environment passed to routed tasks | `TWIN_ROUTE_ENV_ALLOW` | `TERM LANG COLORTERM` only |

@@ -1,6 +1,6 @@
 Host twin
     HostName 10.42.0.11
-    User appspubs
+    User @TWIN_USER@
     IdentityFile ~/.ssh/id_ed25519
     ServerAliveInterval 30
     ControlMaster auto

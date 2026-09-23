@@ -124,9 +124,9 @@ environment.
 .B models
 List Ollama models installed on the twin.
 .SH SHARED MOUSE AND KEYBOARD
-While the twin has its own monitor (to the LEFT of the LG),
+While the twin has its own monitor (to the LEFT of the main monitor),
 .B lan-mouse
-works like one extended desk: push the mouse off the LG's left edge and it
+works like one extended desk: push the mouse off the main monitor's left edge and it
 appears on the twin's screen, with the keyboard following; push it off the
 twin's right edge to come back. It runs as the user service
 .I ~/.config/systemd/user/lan-mouse.service
@@ -161,7 +161,7 @@ SSH, so they work with or without a monitor attached.
 Toggle the twin's screen fullscreen on this PC (also bound to
 .B Super+F12
 in GNOME). Meant for a headless twin: with no monitor plugged in, a virtual
-screen matching this PC's LG monitor (2560x1080,
+screen of TWIN_HEADLESS_MODE size (default 2560x1080 \(em set it to your main monitor's,
 .BR TWIN_HEADLESS_MODE )
 is created, so the view is pixel-exact.
 .B wayvnc

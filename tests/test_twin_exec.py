@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+TWIN_HOME = subprocess.run(["ssh", "twin", "echo $HOME"], capture_output=True, text=True).stdout.strip()
 EXEC = str(ROOT / "route" / "twin-exec")
 os.environ["TWIN_EXEC_VIEWER"] = "0"          # viewer windows are covered by tests/test_viewer.sh
 
@@ -45,7 +46,7 @@ class TwinExecTests(unittest.TestCase):
     def test_quoting_and_comment(self):
         line = """echo "home=$HOME" 'a  b' no*match* ; echo tail # trailing comment"""
         p = subprocess.run([EXEC, "--", line], capture_output=True, text=True, timeout=60, cwd="/tmp")
-        self.assertIn("home=/home/appspubs", p.stdout)          # $HOME expanded on twin
+        self.assertIn(f"home={TWIN_HOME}", p.stdout)          # $HOME expanded on twin
         self.assertIn("a  b", p.stdout)
         self.assertIn("no*match*", p.stdout)
         self.assertIn("tail", p.stdout)
@@ -53,7 +54,7 @@ class TwinExecTests(unittest.TestCase):
 
     def test_runs_in_twin_home_outside_workspace(self):
         p = subprocess.run([EXEC, "--", "pwd"], capture_output=True, text=True, timeout=60, cwd="/tmp")
-        self.assertIn("/home/appspubs", p.stdout)
+        self.assertIn(TWIN_HOME, p.stdout)
 
     def test_fast_command_output_in_tty(self):
         code, out = run_pty([EXEC, "--", "echo fast-output-marker"])

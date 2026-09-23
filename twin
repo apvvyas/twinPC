@@ -10,7 +10,7 @@ TWIN_MAC=${TWIN_MAC:-}                       # twin's wired MAC (Wake-on-LAN) â€
 TWIN_BCAST=${TWIN_BCAST:-10.42.0.255}        # broadcast address of the LAN link
 # this PC's ethernet port the twin is plugged into: the one holding the shared-connection address
 TWIN_IFACE=${TWIN_IFACE:-$(ip -o -4 addr show 2>/dev/null | awk '$4 ~ /^10\.42\.0\.1\//{print $2; exit}')}
-# Environment every job gets: ROCm override for the RX 6600 (gfx1032) + the PyTorch venv on PATH.
+# Environment every job gets: ROCm override for RDNA2 GPUs (RX 6000 series, gfx103x) + the PyTorch venv on PATH.
 REMOTE_ENV='export HSA_OVERRIDE_GFX_VERSION=10.3.0 PATH=$HOME/ai-env/bin:$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH; mkdir -p $HOME/jobs'
 
 usage() {
@@ -67,7 +67,7 @@ gsh() { ssh "$HOST" "$GUI_ENV; $*"; }
 # Hyprland 0.56 dispatches are Lua: `hyprctl dispatch 'hl.dsp.exec_cmd("foot")'`.
 lua_str() { local v=${1//\\/\\\\}; v=${v//\"/\\\"}; printf '"%s"' "$v"; }   # quote a string for Lua
 hdsp() { gsh "hyprctl dispatch $(q "$1")"; }
-TWIN_HEADLESS_MODE=${TWIN_HEADLESS_MODE:-2560x1080@60}   # virtual screen when twin has no monitor = this PC's LG
+TWIN_HEADLESS_MODE=${TWIN_HEADLESS_MODE:-2560x1080@60}   # virtual screen when twin has no monitor (match your main monitor)
 VNC_PORT=${TWIN_VNC_PORT:-5901}              # local end of the SSH tunnel to twin's wayvnc (127.0.0.1:5900 there)
 # What is answering on twin's port 22?  prints: up | unlock | off
 stage() {
@@ -156,7 +156,7 @@ case "$cmd" in
         # (Bluetooth off, reboot) it stays unlinked for good. Reconnecting the tunnel recreates it
         # on this PC's current output. Run every 20 s by twin-kvm.timer.
         if pactl list sink-inputs 2>/dev/null | awk '/^Sink Input #/{sink=""} /^\tSink:/{sink=$2}
-             /media.name = "Tunnel for appspubs@/ && sink=="4294967295"{found=1} END{exit !found}'; then
+             /media.name = "Tunnel for / && sink=="4294967295"{found=1} END{exit !found}'; then
           systemctl --user restart twin-audio.service
           echo "twin audio stream was unlinked â€” reconnected it to $(pactl get-default-sink)"
         fi
@@ -214,7 +214,7 @@ case "$cmd" in
     fi
     if [[ -n $(viewer_pid) ]]; then pkill -f "remmina -c $profile"; echo "twin desktop view closed"; exit 0; fi
     gsh '
-      # headless: with no monitor plugged in, give Hyprland a virtual screen the size of the main PC'"'"'s LG (2560x1080)
+      # headless: with no monitor plugged in, give Hyprland a virtual screen (TWIN_HEADLESS_MODE)
       if [ "$(hyprctl monitors -j | python3 -c "import sys,json;print(len(json.load(sys.stdin)))")" = 0 ]; then
         hyprctl output create headless >/dev/null; sleep 0.5
         hl_out=$(hyprctl monitors -j | python3 -c "import sys,json;print(json.load(sys.stdin)[0][\"name\"])")
@@ -344,7 +344,7 @@ else:
     [[ -t 0 ]] || { echo "twin unlock-screen needs an interactive terminal"; exit 1; }
     locked=$(gsh 'OMARCHY_PATH=/usr/share/omarchy omarchy-shell lock isLocked 2>/dev/null')
     [[ $locked == true ]] || { echo "twin's screen is not locked"; exit 0; }
-    read -rsp "twin password (appspubs): " pw; echo
+    read -rsp "twin login password: " pw; echo
     printf '%s' "$pw" | gsh 'wtype -'; unset pw
     gsh 'wtype -k Return'
     sleep 2
@@ -354,7 +354,7 @@ else:
     echo "twin's screen unlocked"
     ;;
   kvm)
-    # lan-mouse (mouse slides off the LG's left edge onto twin) only makes sense when twin has a real
+    # lan-mouse (mouse slides off the main monitor's edge onto twin) only makes sense when twin has a real
     # monitor. `auto` (run every 20 s by twin-kvm.timer) turns it on/off to match; Super+F12 always works.
     has_monitor() {
       ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" \

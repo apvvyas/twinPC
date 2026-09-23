@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Remote desktop (wayvnc over SSH) + remote GUI control for twin. Run: sudo bash ~/twin-gui-setup.sh
 set -euo pipefail
-U=${SUDO_USER:-appspubs}      # the twin desktop user (whoever ran sudo)
+U=${SUDO_USER:?run with sudo from the twin desktop user account}
 
 echo "== packages (official extra repo) =="
 pacman -S --needed --noconfirm wayvnc ydotool

@@ -13,9 +13,9 @@ as a live session on twin's desktop.
 | | Main PC | Twin |
 |---|---|---|
 | OS / desktop | Ubuntu 26.04, GNOME (Wayland), bash 5.3 | Omarchy (Arch), Hyprland 0.56 (Lua dispatch) |
-| CPU / RAM | Ryzen 9 7950X, 32 threads, 30 GB | 12 threads, 15 GB |
-| GPU | none | RX 6600 8 GB, ROCm (HSA_OVERRIDE_GFX_VERSION=10.3.0) |
-| Link | 10.42.0.1 (enp11s0) | 10.42.0.11, ssh alias `twin`, existing `twin` CLI |
+| CPU / RAM | fast desktop CPU (many cores) | slower CPU, less RAM |
+| GPU | none | AMD GPU with ROCm (RDNA2: HSA_OVERRIDE_GFX_VERSION=10.3.0) |
+| Link | 10.42.0.1 (NetworkManager shared connection) | 10.42.0.11, ssh alias `twin`, existing `twin` CLI |
 
 Because the main PC is much faster at CPU work, twin is used for GPU/AI work, background agents,
 and CPU work only when the main PC is loaded.

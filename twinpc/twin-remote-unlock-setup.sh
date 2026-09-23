@@ -3,7 +3,7 @@
 # Run: sudo bash ~/twin-remote-unlock-setup.sh
 # Undo: sudo rm /etc/mkinitcpio.conf.d/zz-remote-unlock.conf; restore /etc/default/limine from the .bak; sudo limine-mkinitcpio
 set -euo pipefail
-U=${SUDO_USER:-appspubs}      # the twin desktop user (whoever ran sudo)
+U=${SUDO_USER:?run with sudo from the twin desktop user account}
 
 echo "== packages (official extra repo) =="
 pacman -S --needed --noconfirm mkinitcpio-netconf mkinitcpio-dropbear mkinitcpio-utils
