@@ -11,7 +11,7 @@ One ethernet cable. No cloud, no cluster, no new habits.
 ![Bash](https://img.shields.io/badge/Bash-5.x-4EAA25?logo=gnubash&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![AMD ROCm](https://img.shields.io/badge/AMD-ROCm-ED1C24?logo=amd&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-214%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-248%20passing-brightgreen)
 
 [Features](#-features) · [How it works](#-how-it-works) · [Quick start](#-quick-start) · [Commands](#-command-cheat-sheet) · [Configuration](#%EF%B8%8F-configuration) · [Troubleshooting](#-troubleshooting)
 
@@ -93,6 +93,18 @@ automatically. Password-manager secrets are never sent; `twin clip off` pauses i
 ### 🧰 One-command setup
 `tool/twinpc detect` finds both machines' distro, desktop, GPU and network; `install`
 sets everything up step by step (safe to re-run); `doctor` shows ✅ / ⚠️ / ❌ per feature.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🧲 Drag files across
+Drop files on the **edge of the screen that faces the other PC** — a shelf pops up over
+there; drag them into **any folder**. Big folders welcome (rsync over SSH).
+
+</td>
+<td valign="top">
 
 </td>
 </tr>
@@ -219,6 +231,7 @@ Optional GPU PyTorch is part of the `gpu-stack` feature (~4 GB download).
 | `twin push <dir>` · `twin pull <path>` | copy files |
 | `twin audio test` | play a tone on the twin through your speakers |
 | `twin clip status` · `twin clip off` | clipboard sharing between the PCs |
+| `twin shelf status` · `twin shelf off` | the drag-files-across strip and shelf |
 
 Full reference: **`man twin`**.
 
@@ -266,6 +279,14 @@ clipboard extension loads). Files over 500 MB don't go across — use `twin push
 </details>
 
 <details>
+<summary><b>Nothing happens when I drop files on the edge</b></summary>
+
+`twin shelf status` on this PC. A grey strip means the twin isn't connected (`twin clip status`).
+On GNOME the strip is placed by the twinPC extension — log out and back in once after installing.
+Every transfer is logged: `journalctl --user -t twin-clipd`.
+</details>
+
+<details>
 <summary><b>The twin waits at its disk-encryption prompt</b></summary>
 
 Run `twin unlock` in a terminal and type the disk password.
@@ -296,9 +317,9 @@ twin · twin-completion.bash · man/   the twin command, tab completion and manu
 route/                               automatic task routing — router, rules, runner, bash hook
 main/                                main-PC services and settings · main/install.sh
 tool/                                twinpc: probe, profile, step engine, platform adapters, features
-clip/                                clipboard sharing — twin-clipd service/agent and the GNOME extension
+clip/                                clipboard + drag-files-across — twin-clipd, twin-shelf, GNOME extension
 twinpc/                              files installed on the twin (PipeWire output, lan-mouse unit, PyTorch script)
-tests/                               214 unit & integration tests + system checks
+tests/                               248 unit & integration tests + system checks
 docs/                                design notes
 ```
 
@@ -306,9 +327,9 @@ docs/                                design notes
 
 ```bash
 python3 -m unittest tests.test_twin_route tests.test_hook tests.test_clipd tests.test_clipd_link \
-  tests.test_clip_extension tests.tool.test_probe tests.tool.test_profile tests.tool.test_steps \
+  tests.test_clip_extension tests.test_shelf tests.test_clipd_shelf tests.tool.test_probe tests.tool.test_profile tests.tool.test_steps \
   tests.tool.test_adapters tests.tool.test_features tests.tool.test_cli tests.tool.test_review_fixes \
-  tests.tool.test_clipboard                                 # fast, local
+  tests.tool.test_clipboard tests.tool.test_shelf              # fast, local
 python3 -m unittest tests.test_twin_exec                    # needs the twin running
 for t in tests/*.sh; do bash "$t"; done                     # system checks
 ```

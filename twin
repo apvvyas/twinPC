@@ -41,6 +41,7 @@ twin — run and manage jobs on the twin PC   (full manual: man twin)
   twin models                  list Ollama models
   twin audio [on|off|status|test] twin's sound through this PC's speakers
   twin clip [status|on|off]    clipboard sharing with twin (text, images, files)
+  twin shelf [status|on|off]   drop files on the screen edge → a shelf on the other PC to drag them from
   twin sh [cmd...]             shell on twin (or run a one-off command)
 
   twin desktop [stop]          toggle twin's screen fullscreen here (Super+F12) — for headless twin
@@ -180,6 +181,21 @@ case "$cmd" in
       off) systemctl --user stop twin-clip.service
            echo "clipboard sharing OFF until 'twin clip on' or your next login" ;;
       *) echo "usage: twin clip status|on|off"; exit 1 ;;
+    esac
+    ;;
+  shelf)
+    # drag files between the PCs: twin-shelf.service on both PCs + twin-clipd (man twin: SHELF)
+    case ${1:-status} in
+      status)
+        echo "this PC: $("$HOME/.local/bin/twin-shelf" --selftest 2>&1)"
+        echo "twin:    $(ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" '.local/bin/twin-shelf --selftest --socket shelf.sock' 2>&1)" ;;
+      on)  systemctl --user start twin-shelf.service
+           ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" 'systemctl --user start twin-shelf.service' || true
+           echo "shelf ON" ;;
+      off) systemctl --user stop twin-shelf.service
+           ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" 'systemctl --user stop twin-shelf.service' || true
+           echo "shelf OFF until 'twin shelf on' or your next login" ;;
+      *) echo "usage: twin shelf status|on|off"; exit 1 ;;
     esac
     ;;
   route)

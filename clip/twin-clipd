@@ -514,7 +514,8 @@ def agent(inp, out, cache, shelf_sock=None):
                         log(f"refused a drop with unusable paths: {h.get('paths')!r}")
                         notify("those files can't be sent")
                         continue
-                    send(encode("drop", paths=paths, size=total_size([Path(p) for p in paths])))
+                    # "bytes", not "size": every frame header's "size" is its own body length
+                    send(encode("drop", paths=paths, bytes=total_size([Path(p) for p in paths])))
                     log(f"dropped on the twin: {len(paths)} item(s)")
         except (FrameError, OSError) as e:
             log(f"from the twin's shelf app: {e}")
@@ -794,10 +795,11 @@ class Service:
         if paths is None:
             log(f"refused a drop from the twin with unusable paths: {h.get('paths')!r}")
             return
-        size = h.get("size") if isinstance(h.get("size"), int) else 0
+        size = h.get("bytes") if isinstance(h.get("bytes"), int) else 0
         dest = new_slot(self.shelf_root)
         if not enough_space(size, shutil.disk_usage(dest).free):
             shutil.rmtree(dest, ignore_errors=True)
+            self.shelf.send(shelf_frame(state="failed", error=f"not enough space here for {size // MB} MB"))
             notify(f"not enough space here for {size // MB} MB from the twin")
             return
         self.shelf.send(shelf_frame(dir=str(dest), state="receiving", progress=0))

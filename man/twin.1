@@ -276,6 +276,25 @@ last copy that went across;
 stops sharing until
 .B twin clip on
 or your next login.
+.SH SHELF (DRAG FILES ACROSS)
+A thin strip sits on the screen edge that faces the other PC. Drop files or folders on
+it and they are copied to the other PC; a small shelf pops up at that PC's edge holding
+them \(em move the mouse across and drag them into any folder. Files are only ever
+copied. They wait in
+.I ~/.cache/twinpc/shelf/
+(the newest 5 drops are kept). The data goes over SSH with rsync, always started by
+this PC; the strip turns grey while the twin isn't connected.
+.I twin-shelf.service
+runs the strip on both PCs and needs the clipboard link
+.RI ( twin-clip.service ).
+.TP
+.BR "shelf " [ status | on | off ]
+.B status
+shows whether the shelf app runs and is connected on each PC;
+.B off
+hides the strips until
+.B twin shelf on
+or your next login.
 .SH TASK ROUTING
 Commands typed in a bash terminal on this PC are checked when you press Enter.
 GPU/AI work (ollama, *train*.py, whisper, torchrun, claude -p, …), anything run inside

@@ -169,6 +169,24 @@ class ShelfLinkTests(unittest.TestCase):
         failed = self.frames_until(main_in, "failed")[-1]
         self.assertEqual(failed["error"], "twin not connected")
 
+    def test_a_drop_too_big_for_this_pc_is_refused(self):
+        # a stand-in agent that says hello, then drops a file claiming to be enormous
+        f = self.d / "huge.bin"
+        f.write_bytes(b"x")
+        fake = self.d / "fake_agent.py"
+        fake.write_text(
+            "import hashlib, json, sys, time\n"
+            "def frame(**h):\n"
+            "    h = {'v': 1, **h, 'size': 0, 'sha': hashlib.sha256(b'').hexdigest()}\n"
+            "    sys.stdout.buffer.write(json.dumps(h).encode() + b'\\n'); sys.stdout.flush()\n"
+            "frame(kind='hello'); time.sleep(0.5)\n"
+            f"frame(kind='drop', paths=[{str(f)!r}], bytes=10**18)\n"
+            "time.sleep(30)\n")
+        self.start(agent=f"{sys.executable} {fake}")
+        main, main_in = self.shelf_client(self.main_sock)
+        failed = self.frames_until(main_in, "failed")[-1]
+        self.assertIn("not enough space", failed["error"])
+
     def test_unusable_paths_on_the_twin_are_not_forwarded(self):
         main, main_in, twin, twin_in = self.both_linked()
         twin.sendall(cd.encode("drop", paths=["relative/x.txt"]))
