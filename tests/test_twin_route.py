@@ -119,6 +119,15 @@ class RouteTests(unittest.TestCase):
         finally:
             os.remove(os.path.join(self.plain, "a.mp3"))
 
+    def test_files_guard_ignores_plain_words(self):
+        # a folder named like a subcommand ("run", "build") must not pin a command locally
+        os.mkdir(os.path.join(self.plain, "run"))
+        try:
+            self.assertEqual(self.d("ollama run gemma3:4b hi"), ("twin", "always:ollama"))
+            self.assertEqual(self.d("whisper run/a.mp3")[0], "twin")      # path-like but missing file
+        finally:
+            os.rmdir(os.path.join(self.plain, "run"))
+
     # --- load_offload
     def test_load_ok_stays_local(self):
         self.assertEqual(self.d("ffmpeg -i /a.mp4 /b.mp4"), ("local", "load-ok:ffmpeg cpu=10% ram=30%"))

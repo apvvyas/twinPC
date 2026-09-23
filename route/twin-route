@@ -114,6 +114,8 @@ def needs_local_files(sts, cwd, rules):
         for w in st[1:]:
             if w.startswith(("-", "/", "~")):
                 continue
+            if "/" not in w and "." not in w[1:]:
+                continue                     # plain words ("run", "build") are subcommands, not files
             if os.path.exists(os.path.join(cwd, w)):
                 return True
     return False
