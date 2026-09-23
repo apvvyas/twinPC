@@ -1,0 +1,7 @@
+[Unit]
+Description=Twin upkeep every 20 s: mouse sharing on/off by monitor, re-link twin audio stream
+
+[Service]
+Type=oneshot
+ExecStart=-%h/.local/bin/twin kvm auto
+ExecStart=-%h/.local/bin/twin audio heal

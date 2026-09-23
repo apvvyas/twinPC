@@ -148,10 +148,20 @@ case "$cmd" in
       status)
         echo "forward (this PC): $(systemctl --user is-active twin-audio.service)"
         ssh "$HOST" "$AUDIO_ENV; echo \"twin default output: \$(pactl get-default-sink)\"" ;;
+      heal)
+        # twin's tunnel stream is created "dont-reconnect": when the output it plays on disappears
+        # (Bluetooth off, reboot) it stays unlinked for good. Reconnecting the tunnel recreates it
+        # on this PC's current output. Run every 20 s by twin-kvm.timer.
+        if pactl list sink-inputs 2>/dev/null | awk '/^Sink Input #/{sink=""} /^\tSink:/{sink=$2}
+             /media.name = "Tunnel for appspubs@/ && sink=="4294967295"{found=1} END{exit !found}'; then
+          systemctl --user restart twin-audio.service
+          echo "twin audio stream was unlinked — reconnected it to $(pactl get-default-sink)"
+        fi
+        ;;
       test)
         ssh "$HOST" "$AUDIO_ENV; speaker-test -t sine -f 660 -l 1 -p 1 >/dev/null 2>&1 & sleep 1.5; kill \$! 2>/dev/null"
         echo "played a 1.5 s tone on twin's default output" ;;
-      *) echo "usage: twin audio on|off|status|test"; exit 1 ;;
+      *) echo "usage: twin audio on|off|status|test|heal"; exit 1 ;;
     esac
     ;;
   route)
