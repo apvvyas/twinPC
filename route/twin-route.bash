@@ -26,6 +26,7 @@ _twin_route_enter() {
   local line=$READLINE_LINE out decision reason st key ql
   [[ -n ${line//[[:space:]]/} ]] || return 0
   [[ ${TWIN_ROUTE:-on} != off && ! -e ${XDG_CONFIG_HOME:-$HOME/.config}/twin-route/disabled ]] || return 0
+  bash -n <<<"$line" 2>/dev/null || return 0   # incomplete line (for … do, if … then, f() {): leave it alone
   out=$(timeout 0.3 "$_TR_DIR/twin-route" --cwd "$PWD" -- "$line" 2>/dev/null) || return 0   # fail-safe
   decision=${out%% *}; reason=${out#* }
 
@@ -37,6 +38,11 @@ _twin_route_enter() {
     fi
     return 0
   fi
+
+  # aliases, functions and builtins (z, ll, pushd, pwd…) only exist in / act on this shell
+  local w; read -r -a w <<<"$line"
+  while [[ ${w[0]:-} == [A-Za-z_]*=* ]]; do w=("${w[@]:1}"); done
+  case $(type -t -- "${w[0]:-}") in alias|function|builtin) return 0 ;; esac
 
   if [[ $reason == workspace ]] && ! _twin_route_mounted; then
     printf '\e[33m~/twin is not mounted (twin off?) — twin wake · systemctl --user restart twin-mount\e[0m\n'
@@ -62,13 +68,16 @@ _twin_route_enter() {
 
 # runs before the existing history -a/-c/-r in PROMPT_COMMAND: history shows what was typed
 _twin_route_history() {
+  local rc=$?                                  # hand $? on unchanged (starship's precmd runs after us)
   if [[ -n $_TR_ORIG ]]; then history -d -1 2>/dev/null; history -s -- "$_TR_ORIG"; fi
   if [[ -n $_TR_ADD ]]; then history -s -- "$_TR_ADD"; fi
   _TR_ORIG=""; _TR_ADD=""
+  return $rc
 }
 
 # Enter = rewrite (bind -x) then accept-line; bind -x alone cannot accept a line
-bind -x '"\C-x\C-t": _twin_route_enter'
+# (the "$_" argument keeps $_ intact: bash sets $_ to this invocation's last argument afterwards)
+bind -x '"\C-x\C-t": _twin_route_enter "$_"'
 bind '"\C-x\C-a": accept-line'
 bind '"\C-m": "\C-x\C-t\C-x\C-a"'
 bind '"\C-j": "\C-x\C-t\C-x\C-a"'

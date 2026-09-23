@@ -38,6 +38,17 @@ def _is_assignment(word):
 
 def stages(line):
     """Split a command line into pipeline stages (lists of words); None if it should not be routed."""
+    parsed = _parse(line)
+    return parsed and parsed[0]
+
+
+def redirect_targets(line):
+    """Files named by redirections ("> out.txt", "< in.txt"); file descriptors are not included."""
+    parsed = _parse(line)
+    return parsed[1] if parsed else []
+
+
+def _parse(line):
     if not line.strip() or "\n" in line or line.rstrip().endswith("\\"):
         return None
     lex = shlex.shlex(line, posix=True, punctuation_chars=True)
@@ -46,16 +57,18 @@ def stages(line):
         tokens = list(lex)
     except ValueError:                       # unbalanced quotes
         return None
-    out, cur, skip_next = [], [], False
+    out, cur, targets, skip_next = [], [], [], False
     for t in tokens:
         if skip_next:                        # target of a redirection
             skip_next = False
+            if not t.isdigit():              # ">&2" names a file descriptor, not a file
+                targets.append(t)
             continue
         if t in SEPARATORS:
             if cur:
                 out.append(cur)
             cur = []
-        elif t in ("(", ")") or t.startswith("<<") or "$(" in t or t == "$":
+        elif "(" in t or ")" in t or t.startswith("<<") or t == "$":
             return None                      # subshells, command substitution, heredocs
         elif t and set(t) <= set("<>&"):
             skip_next = not t.endswith("&")  # "> file" skips the file; ">&" is followed by an fd
@@ -71,7 +84,7 @@ def stages(line):
             st = st[1:]
         if st:
             cleaned.append(st)
-    return cleaned or None
+    return (cleaned, targets) if cleaned else None
 
 
 def matches(stage, pattern):
@@ -107,8 +120,10 @@ def map_cwd(cwd, rules):
     return remote if rel == "." else f"{remote}/{rel}"
 
 
-def needs_local_files(sts, cwd, rules):
+def needs_local_files(sts, cwd, rules, targets=()):
     if first_match(sts, rules.get("needs_cwd", [])):
+        return True
+    if any(t != "/dev/null" for t in targets):   # "> out.txt" / "< in.txt" name files on this PC
         return True
     for st in sts:
         for w in st[1:]:
@@ -165,7 +180,7 @@ def decide(line, cwd, load, rules):
             decision = ("twin", f"load:{pattern} {usage}")
         else:
             return "local", f"load-ok:{pattern} {usage}"
-    if needs_local_files(sts, cwd, rules):
+    if needs_local_files(sts, cwd, rules, redirect_targets(line)):
         return "local", "files-not-on-twin"
     return decision
 

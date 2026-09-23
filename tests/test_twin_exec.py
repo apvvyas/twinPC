@@ -85,6 +85,37 @@ class TwinExecTests(unittest.TestCase):
         finally:
             subprocess.run(["ssh", "twin", f"tmux kill-session -t {name}"], stderr=subprocess.DEVNULL)
 
+    def test_background_job_is_not_killed(self):
+        # a trailing "&" must not be SIGHUP'd when the pane shell reaches its end
+        p = subprocess.run([EXEC, "--", "(sleep 2; echo bg-done-marker) &"],
+                           capture_output=True, text=True, timeout=60, cwd="/tmp")
+        self.assertIn("bg-done-marker", p.stdout)
+
+    def test_session_that_cannot_start_is_an_error(self):
+        name = f"task-test-dup-{os.getpid()}"
+        subprocess.run(["ssh", "twin", f"tmux new-session -d -s {name} 'sleep 30'"], check=True)
+        try:
+            p = subprocess.run([EXEC, "--name", name, "--", "echo should-not-run"],
+                               capture_output=True, text=True, timeout=60, cwd="/tmp")
+            self.assertEqual(p.returncode, 1)
+            self.assertIn("failed to start", p.stdout + p.stderr)
+            self.assertNotIn("keeps running", p.stdout + p.stderr)
+        finally:
+            subprocess.run(["ssh", "twin", f"tmux kill-session -t {name}"], stderr=subprocess.DEVNULL)
+
+    def test_same_second_runs_get_distinct_sessions(self):
+        a = subprocess.Popen([EXEC, "--", "sleep 2; echo run-a"], stdout=subprocess.PIPE, text=True, cwd="/tmp")
+        b = subprocess.Popen([EXEC, "--", "sleep 2; echo run-b"], stdout=subprocess.PIPE, text=True, cwd="/tmp")
+        out_a, out_b = a.communicate(timeout=60)[0], b.communicate(timeout=60)[0]
+        self.assertEqual((a.returncode, b.returncode), (0, 0))
+        self.assertIn("run-a", out_a); self.assertNotIn("run-b", out_a)
+        self.assertIn("run-b", out_b); self.assertNotIn("run-a", out_b)
+
+    def test_plain_failure_exit_code(self):
+        # no explicit "exit": the last command's status must come back (not wait's)
+        p = subprocess.run([EXEC, "--", "false"], capture_output=True, text=True, timeout=60, cwd="/tmp")
+        self.assertEqual(p.returncode, 1)
+
     def test_usage_error(self):
         p = subprocess.run([EXEC, "--"], capture_output=True, text=True)
         self.assertEqual(p.returncode, 2)

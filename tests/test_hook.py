@@ -21,14 +21,14 @@ STUBS = {
 class Shell:
     """An interactive bash in a pty with the hook sourced and stub commands first on PATH."""
 
-    def __init__(self, stage="up", mounted=True, cwd=None, home=None):
+    def __init__(self, stage="up", mounted=True, cwd=None, home=None, pre_rc=""):
         self.tmp = tempfile.mkdtemp()
         stubs = Path(self.tmp, "bin"); stubs.mkdir()
         for name, body in STUBS.items():
             p = stubs / name
             p.write_text(f"#!/usr/bin/env bash\n{body}\n"); p.chmod(0o755)
         rc = Path(self.tmp, "rc")
-        rc.write_text(f"PS1='PROMPT> '\nHISTFILE={self.tmp}/hist\nHISTCONTROL=ignorespace\nsource {HOOK}\n")
+        rc.write_text(f"PS1='PROMPT> '\nHISTFILE={self.tmp}/hist\nHISTCONTROL=ignorespace\n{pre_rc}\nsource {HOOK}\n")
         runtime = Path(self.tmp, "run"); runtime.mkdir()
         (runtime / "twin-route.load").write_text("5\n")
         env = dict(os.environ, HOME=home or self.tmp, XDG_RUNTIME_DIR=str(runtime),
@@ -168,6 +168,50 @@ class HookTests(unittest.TestCase):
                 sh.close()
         finally:
             shutil.rmtree(home, ignore_errors=True)
+
+    # --- Enter-key safety: the hook runs on every line and must not change shell state
+    def test_exit_status_reaches_later_prompt_hooks(self):
+        # starship's precmd runs after the hook in PROMPT_COMMAND and must still see the real $?
+        sh = Shell(pre_rc='_probe(){ echo "PROBE-RC=$?"; }; PROMPT_COMMAND=_probe')
+        try:
+            self.assertIn("PROBE-RC=1", sh.run("false"))
+        finally:
+            sh.close()
+
+    def test_last_argument_is_kept(self):
+        sh = Shell()
+        try:
+            self.assertIn("U=lastarg-x", sh.run("echo lastarg-x\recho U=$_"))
+        finally:
+            sh.close()
+
+    def workspace_shell(self, **kw):
+        home = tempfile.mkdtemp()
+        ws = Path(home, "twin", "proj"); ws.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, home, True)
+        return Shell(cwd=str(ws), home=home, **kw), ws
+
+    def test_incomplete_line_in_workspace_runs_here(self):
+        sh, _ = self.workspace_shell()
+        try:
+            out = sh.run("for x in 1 2; do\recho LOOP-$x\rdone")
+            self.assertIn("LOOP-1", out)
+            self.assertIn("LOOP-2", out)
+            self.assertNotIn("STUB-TWIN-EXEC", out)
+        finally:
+            sh.close()
+
+    def test_shell_function_and_builtin_in_workspace_run_here(self):
+        sh, ws = self.workspace_shell(pre_rc='myfn(){ echo FN-LOCAL; }')
+        try:
+            out = sh.run("myfn")
+            self.assertIn("FN-LOCAL", out)
+            self.assertNotIn("STUB-TWIN-EXEC", out)
+            out = sh.run("pwd")
+            self.assertIn(str(ws), out)
+            self.assertNotIn("STUB-TWIN-EXEC", out)
+        finally:
+            sh.close()
 
     def test_kill_switch(self):
         sh = Shell()

@@ -99,12 +99,22 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(self.d("FOO=1 ollama run x"), ("twin", "always:ollama"))
         self.assertEqual(self.d("time nice ollama run x"), ("twin", "always:ollama"))
 
-    def test_redirect_target_is_not_a_file_reference(self):
-        open(os.path.join(self.plain, "out.txt"), "w").close()
-        try:
-            self.assertEqual(self.d("ollama run x hi > out.txt"), ("twin", "always:ollama"))
-        finally:
-            os.remove(os.path.join(self.plain, "out.txt"))
+    def test_redirect_to_local_file_stays_here(self):
+        # outside ~/twin a redirect names a file in *this* folder: running on twin would miss/misplace it
+        self.assertEqual(self.d("ollama list > models.txt"), ("local", "files-not-on-twin"))
+        self.assertEqual(self.d("ollama run m < notes.txt"), ("local", "files-not-on-twin"))
+        self.assertEqual(self.d("ollama run m hi >> /tmp/log.txt"), ("local", "files-not-on-twin"))
+
+    def test_redirect_to_dev_null_or_fd_is_fine(self):
+        self.assertEqual(self.d("ollama run x hi > /dev/null"), ("twin", "always:ollama"))
+        self.assertEqual(self.d("ollama run x hi 2>&1"), ("twin", "always:ollama"))
+
+    def test_redirect_inside_workspace_goes_to_twin(self):
+        self.assertEqual(self.d("make > build.log", cwd=WS + "/p"), ("twin", "workspace"))
+
+    def test_function_definition_is_unparsable(self):
+        self.assertEqual(self.d("f() {"), ("local", "unparsable"))
+        self.assertEqual(self.d("f() {", cwd=WS), ("local", "unparsable"))
 
     # --- files guard
     def test_files_guard_needs_cwd(self):

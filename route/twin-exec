@@ -22,7 +22,7 @@ line="$*"
 q() { printf '%q' "$1"; }
 rdir=$("$HERE/twin-route" --map-cwd "$PWD")                  # "~/work/<rel>" or "~"
 first=${line%%[[:space:]]*}; first=${first##*/}; first=${first//[^A-Za-z0-9_-]/}
-session=${name:-task-$(date +%m%d-%H%M%S)-${first:-cmd}}
+session=${name:-task-$(date +%m%d-%H%M%S)-$RANDOM-${first:-cmd}}   # $RANDOM: two runs in one second must not collide
 dir_expr='$HOME'; [[ $rdir != "~" ]] && dir_expr="\$HOME/$(q "${rdir#\~/}")"
 
 envs=""
@@ -33,32 +33,37 @@ done
 # runs inside the tmux pane on twin: log the pane, run the line as typed, record the exit code.
 # The newline after $line keeps a trailing "# comment" or "&" from swallowing the bookkeeping.
 # The EXIT trap records the result however the line ends (including a typed "exit N").
+# The final `wait` keeps the pane alive for background jobs (a trailing & would otherwise be killed by SIGHUP).
 inner="$REMOTE_ENV; $envs mkdir -p \$HOME/jobs; tmux pipe-pane -o $(q "cat >> \$HOME/jobs/$session.log")
 trap 'rc=\$?; sleep 0.2; echo \"[exit \$rc]\" >> \$HOME/jobs/$session.log; echo \$rc > \$HOME/jobs/$session.exit' EXIT
 trap 'exit 130' INT            # Ctrl-C: abort the whole line like an interactive shell, exit 130
 cd $dir_expr || exit 1
 $line
+rc=\$?; wait; exit \$rc
 "
 
 start=$(date +%s)
+fresh="rm -f \$HOME/jobs/$session.log \$HOME/jobs/$session.exit"   # never read a previous run's result
+failed() { echo "twin-exec: '$session' failed to start on twin" >&2; exit 1; }
 [[ ${TWIN_EXEC_VIEWER:-1} == 0 ]] ||                              # 0 = no window on twin (tests)
   setsid "$TWIN" viewer "$session" </dev/null >/dev/null 2>&1 &   # fully detached: must not hold this terminal open
 # Omarchy's tmux sets detach-on-destroy off (clients jump to another session when theirs ends);
 # task sessions turn it on so this terminal and the twin viewer detach when the task finishes.
 if [[ -t 0 && -t 1 ]]; then
   # this terminal creates (and is attached to) the session, so even instant output is seen
-  ssh -q -t "$HOST" "tmux new-session -s $(q "$session") bash -c $(q "$inner") \\; set-option -t $(q "$session") detach-on-destroy on \\; set-option -t $(q "$session") status off"
+  ssh -q -t "$HOST" "$fresh; tmux new-session -s $(q "$session") bash -c $(q "$inner") \\; set-option -t $(q "$session") detach-on-destroy on \\; set-option -t $(q "$session") status off"
   ssh_rc=$?
   # tmux drew on the alternate screen, which vanishes when it exits: replay the finished task's
   # output on the normal screen so it stays in this terminal's scrollback (skipped when detached)
   (( ssh_rc == 255 )) || ssh "$HOST" "[ -f \$HOME/jobs/$session.exit ] && grep -v '^\[exit [0-9]*\]\$' \$HOME/jobs/$session.log" </dev/null
 else
-  ssh "$HOST" "tmux new-session -d -s $(q "$session") bash -c $(q "$inner") \\; set-option -t $(q "$session") detach-on-destroy on
+  ssh "$HOST" "$fresh; tmux new-session -d -s $(q "$session") bash -c $(q "$inner") \\; set-option -t $(q "$session") detach-on-destroy on || exit 97
     log=\$HOME/jobs/$session.log; ex=\$HOME/jobs/$session.exit
     for _ in \$(seq 50); do [ -f \$log ] && break; sleep 0.1; done
     tail -n +1 -f \$log & t=\$!
     while [ ! -f \$ex ]; do sleep 0.3; done; sleep 0.3; kill \$t"
   ssh_rc=$?
+  (( ssh_rc == 97 )) && failed
 fi
 
 if [[ $ssh_rc -eq 255 ]]; then
@@ -67,6 +72,8 @@ if [[ $ssh_rc -eq 255 ]]; then
 fi
 rc=$(ssh "$HOST" "cat \$HOME/jobs/$session.exit 2>/dev/null" </dev/null)
 if [[ -z $rc ]]; then
+  # no result: either the user detached (session still there) or the session never started
+  ssh "$HOST" "tmux has-session -t $(q "$session") 2>/dev/null" </dev/null || failed
   echo "detached — '$session' keeps running on twin (twin attach $session · twin logs $session)"
   exit 0
 fi
