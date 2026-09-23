@@ -313,7 +313,7 @@ def agent(inp, out, cache):
     try:                                          # what is on the clipboard already isn't a new copy
         picked = pick(wl_types(), wl_get)
         if picked:
-            echo.mark(picked[1])
+            echo.mark(echo_key(picked[1], picked[2]))
     except (subprocess.CalledProcessError, OSError):
         pass
     watcher = subprocess.Popen(["wl-paste", "--watch", "echo", "changed"], stdout=subprocess.PIPE,

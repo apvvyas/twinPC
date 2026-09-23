@@ -156,6 +156,19 @@ class LinkTests(unittest.TestCase):
         self.twin_copy(b"old twin clipboard")
         self.start()
         self.wait(lambda: self.status()["twin"], "the agent to connect")
+        time.sleep(1)
+        self.assertEqual(self.status()["last"], "nothing yet")     # neither via the extension nor the fallback
+        self.assert_quiet()
+
+    def test_existing_twin_files_are_not_pushed_on_connect(self):
+        src = Path(self.tmp.name) / "src"
+        src.mkdir()
+        (src / "old.png").write_bytes(b"old")
+        self.twin_copy((src / "old.png").as_uri().encode() + b"\r\n", "text/uri-list")
+        self.start()
+        self.wait(lambda: self.status()["twin"], "the agent to connect")
+        time.sleep(1)
+        self.assertEqual(self.status()["last"], "nothing yet")     # neither via the extension nor the fallback
         self.assert_quiet()
 
     def test_copies_are_dropped_while_the_twin_is_away(self):
