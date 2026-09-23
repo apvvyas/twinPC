@@ -165,8 +165,8 @@ def unit_step(id, feature, machine, unit, user=True, now=True):
     return cmd_step(id, feature, machine, f"enable {unit}", check, apply, root=not user, check_root=False)
 
 
-def unsupported_step(feature, machine, reason):
-    return Step(f"{feature}.{machine}.unsupported", feature, machine, False, "", None, None, skip_reason=reason)
+def unsupported_step(feature, machine, reason, tag="unsupported"):
+    return Step(f"{feature}.{machine}.{tag}", feature, machine, False, "", None, None, skip_reason=reason)
 
 
 def run_steps(steps, ctx, dry_run=False, out=print):

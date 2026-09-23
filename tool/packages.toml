@@ -1,0 +1,17 @@
+# Logical package name → the package name for each package manager.
+# A missing entry means "not available there yet": the feature that needs it is skipped with a reason.
+tmux = { apt = "tmux", pacman = "tmux", dnf = "tmux" }
+openssh = { apt = "openssh-server", pacman = "openssh", dnf = "openssh-server" }
+ethtool = { apt = "ethtool", pacman = "ethtool", dnf = "ethtool" }
+sshfs = { apt = "sshfs", pacman = "sshfs", dnf = "fuse-sshfs" }
+remmina = { apt = "remmina", pacman = "remmina", dnf = "remmina" }
+wayvnc = { apt = "wayvnc", pacman = "wayvnc", dnf = "wayvnc" }
+wtype = { apt = "wtype", pacman = "wtype", dnf = "wtype" }
+ydotool = { apt = "ydotool", pacman = "ydotool", dnf = "ydotool" }
+grim = { apt = "grim", pacman = "grim", dnf = "grim" }
+docker = { apt = "docker.io", pacman = "docker", dnf = "moby-engine" }
+lan-mouse = { pacman = "lan-mouse" }
+ollama-rocm = { pacman = "ollama-rocm" }
+mkinitcpio-netconf = { pacman = "mkinitcpio-netconf" }
+mkinitcpio-dropbear = { pacman = "mkinitcpio-dropbear" }
+mkinitcpio-utils = { pacman = "mkinitcpio-utils" }
