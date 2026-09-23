@@ -21,6 +21,7 @@ twin — run and manage jobs on the twin PC   (full manual: man twin)
   twin send <name> <text...>   type text + Enter into a job (e.g. answer a prompt, talk to claude)
   twin kill <name>             stop a job
   twin viewer <name>           open a window for a job on twin's workspace 9 (automatic for run/cc/bizdev)
+  twin route [on|off|status]   automatic task routing from this terminal to twin (twin route explain <cmd>)
   twin claude <name> [dir]     start a Claude Code session in tmux (then: twin attach <name>)
   twin cc <name> <dir> <prompt> run a headless Claude Code task as a logged job
   twin bizdev [task...]        business-development agent on twin (no task: interactive session)
@@ -151,6 +152,21 @@ case "$cmd" in
         ssh "$HOST" "$AUDIO_ENV; speaker-test -t sine -f 660 -l 1 -p 1 >/dev/null 2>&1 & sleep 1.5; kill \$! 2>/dev/null"
         echo "played a 1.5 s tone on twin's default output" ;;
       *) echo "usage: twin audio on|off|status|test"; exit 1 ;;
+    esac
+    ;;
+  route)
+    flag=${XDG_CONFIG_HOME:-$HOME/.config}/twin-route/disabled
+    case ${1:-status} in
+      on)  rm -f "$flag"; echo "task routing ON (applies to the next command in every terminal)" ;;
+      off) mkdir -p "$(dirname "$flag")"; touch "$flag"; echo "task routing OFF" ;;
+      status)
+        if [[ -e $flag ]]; then echo "task routing: OFF"; else echo "task routing: ON"; fi
+        echo "rules: ${XDG_CONFIG_HOME:-$HOME/.config}/twin-route/rules.toml"
+        echo "~/twin mount: $(findmnt -rn -M "$HOME/twin" >/dev/null && echo mounted || echo 'not mounted')"
+        echo "this PC's CPU (1-min avg): $(cat "${XDG_RUNTIME_DIR:-/tmp}/twin-route.load" 2>/dev/null || echo n/a)%"
+        ;;
+      explain) shift; "$(dirname "$(readlink -f "$0")")/route/twin-route" --cwd "$PWD" --explain -- "$*" ;;
+      *) echo "usage: twin route on|off|status|explain <command>"; exit 1 ;;
     esac
     ;;
   viewer)

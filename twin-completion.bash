@@ -1,7 +1,7 @@
 # bash tab completion for `twin` (sourced from ~/.bashrc)
 _twin() {
     local cur=${COMP_WORDS[COMP_CWORD]}
-    local cmds="run ls logs attach send kill claude cc bizdev gpu audio top ps pkill push pull models sh desktop kvm unlock-screen gui wake unlock off reboot status link help"
+    local cmds="route viewer run ls logs attach send kill claude cc bizdev gpu audio top ps pkill push pull models sh desktop kvm unlock-screen gui wake unlock off reboot status link help"
     if [[ $COMP_CWORD -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$cmds" -- "$cur"))
     elif [[ $COMP_CWORD -eq 2 ]]; then

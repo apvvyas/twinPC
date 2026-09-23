@@ -47,8 +47,11 @@ start=$(date +%s)
 # task sessions turn it on so this terminal and the twin viewer detach when the task finishes.
 if [[ -t 0 && -t 1 ]]; then
   # this terminal creates (and is attached to) the session, so even instant output is seen
-  ssh -q -t "$HOST" "tmux new-session -s $(q "$session") bash -c $(q "$inner") \\; set-option -t $(q "$session") detach-on-destroy on"
+  ssh -q -t "$HOST" "tmux new-session -s $(q "$session") bash -c $(q "$inner") \\; set-option -t $(q "$session") detach-on-destroy on \\; set-option -t $(q "$session") status off"
   ssh_rc=$?
+  # tmux drew on the alternate screen, which vanishes when it exits: replay the finished task's
+  # output on the normal screen so it stays in this terminal's scrollback (skipped when detached)
+  (( ssh_rc == 255 )) || ssh "$HOST" "[ -f \$HOME/jobs/$session.exit ] && grep -v '^\[exit [0-9]*\]\$' \$HOME/jobs/$session.log" </dev/null
 else
   ssh "$HOST" "tmux new-session -d -s $(q "$session") bash -c $(q "$inner") \\; set-option -t $(q "$session") detach-on-destroy on
     log=\$HOME/jobs/$session.log; ex=\$HOME/jobs/$session.exit

@@ -60,6 +60,14 @@ class TwinExecTests(unittest.TestCase):
         self.assertIn("fast-output-marker", out)
         self.assertEqual(code, 0)
 
+    def test_output_survives_after_tmux_exits(self):
+        # tmux draws on the alternate screen, which the terminal drops when tmux exits:
+        # the task's output must be printed again on the normal screen so it stays in scrollback
+        code, out = run_pty([EXEC, "--", "echo survives-marker"])
+        normal_screen = out.rsplit("\x1b[?1049l", 1)[-1]
+        self.assertIn("survives-marker", normal_screen)
+        self.assertEqual(code, 0)
+
     def test_ctrl_c_reaches_remote(self):
         t = time.monotonic()
         code, out = run_pty([EXEC, "--", "sleep 60"], feed=[(6, b"\x03")])

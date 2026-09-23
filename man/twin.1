@@ -242,6 +242,41 @@ makes "Main PC speakers" the twin's default output and moves playing streams to 
 switches back to the twin's own output;
 .B test
 plays a short tone on the twin.
+.SH TASK ROUTING
+Commands typed in a bash terminal on this PC are checked when you press Enter.
+GPU/AI work (ollama, *train*.py, whisper, torchrun, claude -p, …), anything run inside
+.I ~/twin
+(the twin's
+.I ~/work
+mounted here) and \(em only while this PC is busy (CPU \(>= 80 % or RAM \(>= 85 %) \(em
+CPU-heavy commands run on the twin instead. A dim
+.B \(-> twin (reason)
+line shows it happened; output, Ctrl-C and the exit code behave as if it ran here, and
+history keeps what you typed. Each task also opens a terminal window on the twin's
+workspace 9 (closes 30 s after success, stays open on failure). Ctrl-b d detaches: the
+task keeps running on the twin
+.RB ( "twin ls" ", " "twin attach" ).
+If the twin is not up you are asked: [h]ere / [w]ake twin / [c]ancel.
+.PP
+Rules:
+.I ~/.config/twin-route/rules.toml
+(always_twin, never_twin, load_offload, needs_cwd, thresholds). Commands that need files
+from a folder that only exists on this PC stay here.
+.B local
+.I cmd
+forces this PC;
+.B twin-exec --
+.I cmd
+forces the twin;
+.B twin route explain
+.I cmd
+shows the decision;
+.B twin route off
+/
+.B on
+(or
+.B TWIN_ROUTE=off
+for one shell) switches it.
 .SH POWER
 .TP
 .B wake
