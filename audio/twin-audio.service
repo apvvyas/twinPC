@@ -1,0 +1,12 @@
+[Unit]
+Description=Let the twin PC play through this PC's speakers (PipeWire socket forwarded over SSH)
+After=twin-link.service
+
+[Service]
+# twin's 127.0.0.1:4713 → this PC's PipeWire-Pulse socket; no port is opened on this PC
+ExecStart=/usr/bin/ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ControlMaster=no -o ControlPath=none -R 127.0.0.1:4713:%t/pulse/native twin
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

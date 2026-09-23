@@ -1,0 +1,389 @@
+#!/usr/bin/env bash
+# twin — control processes and AI jobs on the LAN "twin" PC (ssh alias: twin).
+# Jobs run in remote tmux sessions, so they survive disconnects; output is logged to ~/jobs/<name>.log.
+set -euo pipefail
+
+HOST=${TWIN_HOST:-twin}
+TWIN_MAC=${TWIN_MAC:-30:c5:99:ab:f7:fe}      # twin's enp6s0 (Realtek RTL8111)
+TWIN_BCAST=${TWIN_BCAST:-10.42.0.255}        # broadcast address of the LAN link
+TWIN_IFACE=${TWIN_IFACE:-enp11s0}            # this PC's ethernet port the twin is plugged into
+# Environment every job gets: ROCm override for the RX 6600 (gfx1032) + the PyTorch venv on PATH.
+REMOTE_ENV='export HSA_OVERRIDE_GFX_VERSION=10.3.0 PATH=$HOME/ai-env/bin:$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH; mkdir -p $HOME/jobs'
+
+usage() {
+  cat <<'EOF'
+twin — run and manage jobs on the twin PC   (full manual: man twin)
+
+  twin run <name> <cmd...>     start a background job (tmux session, logged to ~/jobs/<name>.log)
+  twin ls                      list jobs (tmux sessions)
+  twin logs <name> [-f]        show job log (-f to follow)
+  twin attach <name>           attach to a job's terminal (detach: Ctrl-b d)
+  twin send <name> <text...>   type text + Enter into a job (e.g. answer a prompt, talk to claude)
+  twin kill <name>             stop a job
+  twin claude <name> [dir]     start a Claude Code session in tmux (then: twin attach <name>)
+  twin cc <name> <dir> <prompt> run a headless Claude Code task as a logged job
+  twin bizdev [task...]        business-development agent on twin (no task: interactive session)
+  twin gpu                     GPU utilisation / VRAM
+  twin top                     top processes by CPU and memory
+  twin ps <pattern>            find processes matching pattern
+  twin pkill <pattern>         kill processes matching pattern
+  twin push <local> [remote]   rsync files to twin (default remote: ~/work/)
+  twin pull <remote> [local]   rsync files from twin (default local: .)
+  twin models                  list Ollama models
+  twin audio [on|off|status|test] twin's sound through this PC's speakers
+  twin sh [cmd...]             shell on twin (or run a one-off command)
+
+  twin desktop [stop]          toggle twin's screen fullscreen here (Super+F12) — for headless twin
+  twin unlock-screen           type twin's login password into its lock screen (prompted here)
+  twin kvm [status|on|off]     shared mouse onto twin's monitor (auto: on only when twin has a monitor)
+  twin gui shot [file]         screenshot twin's screen to this PC (default ~/Pictures/twin/)
+  twin gui open <cmd...>       launch an app on twin's desktop (e.g. twin gui open firefox)
+  twin gui windows             list open windows          twin gui focus <class>   focus a window
+  twin gui close               close focused window       twin gui ws <n>          switch workspace
+  twin gui type <text>         type text                  twin gui key <combo>     e.g. ctrl+c, super+Return
+  twin gui click [btn] [x y]   click (left/right/middle), optionally at x y
+  twin gui move <x> <y>        move the pointer           twin gui scroll <n>      scroll (+down / -up)
+  twin gui hypr <args...>      raw hyprctl (e.g. twin gui hypr dispatch 'hl.dsp.window.fullscreen()')
+
+  twin wake                    power on (Wake-on-LAN) → ask for disk password → wait until up
+  twin unlock                  just the disk-password step (e.g. twin rebooted on its own)
+  twin off | reboot            shut down / reboot twin (reboot also asks for the disk password)
+  twin status                  up, waiting for disk password, booting, or off?
+  twin link start|stop|prompt  used automatically: wake twin at this PC's boot, unlock window at
+                               login, power twin off at shutdown (skipped if jobs are running)
+EOF
+}
+
+q() { printf '%q ' "$@"; }                 # shell-quote args for the remote side
+rsh() { ssh "$HOST" "$REMOTE_ENV; $*"; }
+# Environment to reach twin's logged-in Hyprland desktop from an SSH session.
+GUI_ENV='export XDG_RUNTIME_DIR=/run/user/$(id -u); cd $XDG_RUNTIME_DIR; export WAYLAND_DISPLAY=$(ls wayland-? 2>/dev/null | head -1) HYPRLAND_INSTANCE_SIGNATURE=$(ls -t hypr 2>/dev/null | head -1); cd; [ -n "$HYPRLAND_INSTANCE_SIGNATURE" ] || { echo "twin: no Hyprland session running (is it logged in?)" >&2; exit 1; }'
+gsh() { ssh "$HOST" "$GUI_ENV; $*"; }
+# Hyprland 0.56 dispatches are Lua: `hyprctl dispatch 'hl.dsp.exec_cmd("foot")'`.
+lua_str() { local v=${1//\\/\\\\}; v=${v//\"/\\\"}; printf '"%s"' "$v"; }   # quote a string for Lua
+hdsp() { gsh "hyprctl dispatch $(q "$1")"; }
+TWIN_HEADLESS_MODE=${TWIN_HEADLESS_MODE:-2560x1080@60}   # virtual screen when twin has no monitor = this PC's LG
+VNC_PORT=${TWIN_VNC_PORT:-5901}              # local end of the SSH tunnel to twin's wayvnc (127.0.0.1:5900 there)
+# What is answering on twin's port 22?  prints: up | unlock | off
+stage() {
+  local b
+  b=$(timeout 3 bash -c 'exec 3<>/dev/tcp/10.42.0.11/22 && head -c 64 <&3' 2>/dev/null | tr -d '\r' | head -1)
+  case $b in
+    *dropbear*) echo unlock ;;   # initramfs SSH waiting for the disk password
+    SSH-*)      echo up ;;
+    *)          echo off ;;
+  esac
+}
+
+# Wait (≤3 min) for twin to come up; at the disk-encryption prompt hand over to `twin unlock`.
+wait_boot() {
+  for _ in $(seq 60); do
+    case $(stage) in
+      up)     if ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" true 2>/dev/null; then echo " — up"; exit 0; fi ;;
+      unlock) echo; exec "$0" unlock ;;            # headless: ask for the disk password right here
+    esac
+    echo -n "."; sleep 3
+  done
+}
+
+cmd=${1:-help}; shift || true
+case "$cmd" in
+  run)
+    [[ $# -ge 2 ]] || { echo "usage: twin run <name> <cmd...>"; exit 1; }
+    name=$1; shift
+    inner="$REMOTE_ENV; cd \$HOME; ( $* ) 2>&1 | tee -a \$HOME/jobs/$name.log; echo \"[exit \${PIPESTATUS[0]}]\" | tee -a \$HOME/jobs/$name.log; exec bash"
+    ssh "$HOST" "$REMOTE_ENV; tmux new-session -d -s $(q "$name") $(q bash -lc "$inner")"
+    echo "started '$name' on $HOST  →  twin logs $name -f"
+    ;;
+  ls)      ssh "$HOST" 'tmux ls 2>/dev/null || echo "(no jobs)"' ;;
+  logs)
+    name=${1:?name}
+    if [[ ${2:-} == -f ]]; then ssh -t "$HOST" "tail -n 50 -f ~/jobs/$(q "$name")"'.log'
+    else ssh "$HOST" "tail -n 200 ~/jobs/$name.log"; fi
+    ;;
+  attach)  ssh -t "$HOST" "tmux attach -t $(q "${1:?name}")" ;;
+  send)
+    name=${1:?name}; shift
+    ssh "$HOST" "tmux send-keys -t $(q "$name") $(q "$*") Enter"
+    ;;
+  kill)    ssh "$HOST" "tmux kill-session -t $(q "${1:?name}")" && echo "killed ${1}" ;;
+  claude)
+    name=${1:?name}; dir=${2:-\$HOME}
+    ssh "$HOST" "$REMOTE_ENV; tmux new-session -d -s $(q "$name") -c $dir claude"
+    echo "Claude Code running in '$name' → twin attach $name   (or: twin send $name \"your prompt\")"
+    ;;
+  cc)
+    [[ $# -ge 3 ]] || { echo "usage: twin cc <name> <dir> <prompt...>"; exit 1; }
+    name=$1 dir=$2; shift 2
+    "$0" run "$name" "cd $dir && claude -p $(q "$*") --permission-mode acceptEdits"
+    ;;
+  bizdev)
+    # Business development agent (the it-services-bizdev skill, installed only on twin), working in ~/bizdev.
+    if [[ $# -eq 0 ]]; then
+      ssh "$HOST" "$REMOTE_ENV; tmux has-session -t bizdev 2>/dev/null || tmux new-session -d -s bizdev -c \$HOME/bizdev claude"
+      exec ssh -t "$HOST" 'tmux attach -t bizdev'
+    fi
+    name=bizdev-$(date +%m%d-%H%M%S)
+    # headless: may research the web, write files in ~/bizdev and run the pipeline script — nothing else
+    "$0" run "$name" "cd \$HOME/bizdev && claude -p $(q "Use the it-services-bizdev skill. Task: $*") --permission-mode acceptEdits --allowedTools 'WebSearch WebFetch Read Write Edit Glob Grep Bash(python3 *pipeline.py*)'"
+    echo "results: twin logs $name   ·   files: twin sh ls -R bizdev"
+    ;;
+  audio)
+    # twin's sound through this PC's speakers: twin-audio.service (here) forwards this PC's PipeWire
+    # socket to twin's 127.0.0.1:4713; twin has a "Main PC speakers" output tunnelling to it.
+    AUDIO_ENV='export XDG_RUNTIME_DIR=/run/user/$(id -u)'
+    case ${1:-status} in
+      on)
+        systemctl --user start twin-audio.service
+        ssh "$HOST" "$AUDIO_ENV; pactl set-default-sink main-pc-speakers &&
+          for i in \$(pactl list short sink-inputs | cut -f1); do pactl move-sink-input \$i main-pc-speakers; done"
+        echo "twin audio → this PC's speakers" ;;
+      off)
+        ssh "$HOST" "$AUDIO_ENV; own=\$(pactl list short sinks | cut -f2 | grep -v '^main-pc-speakers\$' | head -1);
+          pactl set-default-sink \"\$own\" &&
+          for i in \$(pactl list short sink-inputs | cut -f1); do pactl move-sink-input \$i \"\$own\"; done; echo \"twin audio → twin's own output (\$own)\"" ;;
+      status)
+        echo "forward (this PC): $(systemctl --user is-active twin-audio.service)"
+        ssh "$HOST" "$AUDIO_ENV; echo \"twin default output: \$(pactl get-default-sink)\"" ;;
+      test)
+        ssh "$HOST" "$AUDIO_ENV; speaker-test -t sine -f 660 -l 1 -p 1 >/dev/null 2>&1 & sleep 1.5; kill \$! 2>/dev/null"
+        echo "played a 1.5 s tone on twin's default output" ;;
+      *) echo "usage: twin audio on|off|status|test"; exit 1 ;;
+    esac
+    ;;
+  gpu)
+    ssh "$HOST" 'd=$(dirname $(readlink -f /sys/class/drm/card*/device/gpu_busy_percent | head -1));
+      used=$(( $(cat $d/mem_info_vram_used) / 1048576 )); total=$(( $(cat $d/mem_info_vram_total) / 1048576 ));
+      echo "GPU busy: $(cat $d/gpu_busy_percent)%   VRAM: ${used} / ${total} MiB";
+      temp=$(cat $d/hwmon/hwmon*/temp1_input 2>/dev/null | head -1); [ -n "$temp" ] && echo "Temp: $((temp/1000))°C";
+      ollama ps 2>/dev/null | tail -n +2 | sed "s/^/ollama: /" || true'
+    ;;
+  top)     ssh "$HOST" 'uptime; free -h | head -2; echo; ps -eo pid,user,%cpu,%mem,etime,comm --sort=-%cpu | head -15' ;;
+  ps)      ssh "$HOST" "pgrep -af $(q "${1:?pattern}") || echo '(none)'" ;;
+  pkill)   ssh "$HOST" "pkill -f $(q "${1:?pattern}") && echo killed || echo '(none matched)'" ;;
+  push)    rsync -avz --progress "${1:?local path}" "$HOST:${2:-work/}" ;;
+  pull)    rsync -avz --progress "$HOST:${1:?remote path}" "${2:-.}" ;;
+  models)  curl -s http://10.42.0.11:11434/api/tags | python3 -c 'import sys,json; [print("%-40s %.1f GB" % (m["name"], m["size"]/1e9)) for m in json.load(sys.stdin)["models"]]' ;;
+  sh)      if [[ $# -gt 0 ]]; then rsh "$*"; else ssh -t "$HOST"; fi ;;
+  desktop|vnc)
+    # Twin's desktop fullscreen on this PC (headless twin, or just to see it here). Run again to close it.
+    # wayvnc on twin listens on 127.0.0.1 only; we reach it through an SSH tunnel.
+    profile=$HOME/.local/share/remmina/twin.remmina
+    viewer_pid() { pgrep -f "remmina -c $profile" | head -1; }
+    if [[ ${1:-} == stop ]]; then
+      pkill -f "remmina -c $profile" 2>/dev/null || true
+      ssh "$HOST" 'pkill -x wayvnc' 2>/dev/null || true
+      pkill -f "ssh .*-L $VNC_PORT:127.0.0.1:5900" 2>/dev/null || true
+      echo "remote desktop stopped"; exit 0
+    fi
+    if [[ -n $(viewer_pid) ]]; then pkill -f "remmina -c $profile"; echo "twin desktop view closed"; exit 0; fi
+    gsh '
+      # headless: with no monitor plugged in, give Hyprland a virtual screen the size of the main PC'"'"'s LG (2560x1080)
+      if [ "$(hyprctl monitors -j | python3 -c "import sys,json;print(len(json.load(sys.stdin)))")" = 0 ]; then
+        hyprctl output create headless >/dev/null; sleep 0.5
+        hl_out=$(hyprctl monitors -j | python3 -c "import sys,json;print(json.load(sys.stdin)[0][\"name\"])")
+        hyprctl eval "hl.monitor({ output = \"$hl_out\", mode = \"'"$TWIN_HEADLESS_MODE"'\", position = \"auto\", scale = 1 })" >/dev/null
+      fi
+      pgrep -x wayvnc >/dev/null || { setsid wayvnc 127.0.0.1 5900 >/tmp/wayvnc.log 2>&1 < /dev/null & sleep 1; }
+      pgrep -x wayvnc >/dev/null || { echo "wayvnc failed to start:"; cat /tmp/wayvnc.log; exit 1; }'
+    if ! ss -ltn "sport = :$VNC_PORT" | grep -q LISTEN; then
+      ssh -o ControlPath=none -o ExitOnForwardFailure=yes -f -N -L "$VNC_PORT:127.0.0.1:5900" "$HOST"
+    fi
+    setsid remmina -c "$profile" >/dev/null 2>&1 < /dev/null &
+    echo "twin desktop shown fullscreen — run 'twin desktop' again (or Super+F12) to close it"
+    ;;
+  gui)
+    sub=${1:-help}; shift || true
+    case $sub in
+      shot)
+        out=${1:-$HOME/Pictures/twin/twin-$(date +%Y%m%d-%H%M%S).png}
+        mkdir -p "$(dirname "$out")"
+        gsh 'grim -' > "$out" && echo "$out"
+        ;;
+      open)    [[ $# -gt 0 ]] || { echo "usage: twin gui open <cmd...>"; exit 1; }
+               hdsp "hl.dsp.exec_cmd($(lua_str "$*"))" ;;
+      windows) gsh 'hyprctl clients -j' | python3 -c '
+import sys, json
+for c in json.load(sys.stdin):
+    if c.get("mapped", True):
+        print("ws %-3s %-28s %s" % (c["workspace"]["name"], c["class"][:28], c["title"][:70]))' ;;
+      focus)   t=${1:?class or hyprland window selector}; [[ $t == *:* ]] || t="class:(?i).*$t.*"
+               hdsp "hl.dsp.focus({ window = $(lua_str "$t") })" ;;
+      close)   hdsp 'hl.dsp.window.close()' ;;
+      ws)      hdsp "hl.dsp.focus({ workspace = $(lua_str "${1:?workspace}") })" ;;
+      type)    gsh "wtype -- $(q "$*")" ;;
+      key)
+        # ctrl+shift+t → wtype -M ctrl -M shift -k t -m shift -m ctrl
+        IFS=+ read -ra parts <<< "${1:?combo, e.g. ctrl+c}"
+        key=${parts[-1]}; args=(); rel=()
+        for m in "${parts[@]:0:${#parts[@]}-1}"; do
+          m=${m,,}; [[ $m == super || $m == win || $m == meta ]] && m=logo
+          args+=(-M "$m"); rel=(-m "$m" "${rel[@]}")
+        done
+        gsh "wtype $(q "${args[@]}" -k "$key" "${rel[@]}")"
+        ;;
+      move)    hdsp "hl.dsp.cursor.move({ x = $(( ${1:?x} )), y = $(( ${2:?y} )) })" ;;
+      click)
+        btn=left; [[ ${1:-} =~ ^(left|right|middle)$ ]] && { btn=$1; shift; }
+        code=$(case $btn in left) echo 0xC0;; right) echo 0xC1;; middle) echo 0xC2;; esac)
+        pre=""; [[ $# -ge 2 ]] && pre="hyprctl dispatch $(q "hl.dsp.cursor.move({ x = $(( $1 )), y = $(( $2 )) })") >/dev/null;"
+        gsh "$pre pgrep -u \$USER -x ydotoold >/dev/null || { setsid ydotoold >/dev/null 2>&1 < /dev/null & sleep 0.5; }; ydotool click $code >/dev/null"
+        ;;
+      scroll)  gsh "pgrep -u \$USER -x ydotoold >/dev/null || { setsid ydotoold >/dev/null 2>&1 < /dev/null & sleep 0.5; }; ydotool mousemove --wheel -- 0 $(q "${1:?amount}") >/dev/null" ;;
+      hypr)    gsh "hyprctl $(q "$@")" ;;
+      *) echo "usage: twin gui shot|open|windows|focus|close|ws|type|key|click|move|scroll|hypr  (see: twin help)"; exit 1 ;;
+    esac
+    ;;
+  wake)
+    # Wake-on-LAN magic packet (6×0xFF + MAC×16), broadcast on the LAN link; then wait for SSH.
+    # With twin off the cable has no carrier and NetworkManager may drop 10.42.0.1 from the
+    # interface; then a UDP broadcast would have no route, so send a raw ethernet frame instead (needs sudo).
+    WOL_PY='
+import socket, sys
+mode, mac, target = sys.argv[1], bytes.fromhex(sys.argv[2].replace(":", "")), sys.argv[3]
+payload = b"\xff" * 6 + mac * 16
+if mode == "udp":
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    for port in (9, 7):
+        s.sendto(payload, (target, port))
+else:
+    s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+    s.bind((target, 0))
+    s.send(b"\xff" * 6 + s.getsockname()[4] + b"\x08\x42" + payload)   # EtherType 0x0842 = WoL
+'
+    if ip -4 addr show dev "$TWIN_IFACE" 2>/dev/null | grep -q 'inet '; then
+      python3 -c "$WOL_PY" udp "$TWIN_MAC" "$TWIN_BCAST"
+    else
+      echo "$TWIN_IFACE has no IP (no link while twin is off) — sending raw frame, sudo needed"
+      sudo python3 -c "$WOL_PY" raw "$TWIN_MAC" "$TWIN_IFACE"
+    fi
+    echo -n "magic packet sent to $TWIN_MAC, waiting for twin to boot"
+    wait_boot
+    echo " — no answer after 3 min (check BIOS Wake-on-LAN / that this PC's ethernet is up)"; exit 1
+    ;;
+  unlock)
+    # twin's disk is LUKS-encrypted: at boot a small SSH server (dropbear, in the initramfs) waits
+    # for the passphrase. Type it here; it is sent over the LAN cable inside SSH.
+    [[ -t 0 ]] || { echo "twin unlock needs an interactive terminal to read the disk password"; exit 1; }
+    for attempt in 1 2 3; do
+      case $(stage) in
+        up)  echo "twin is already unlocked and up"; exit 0 ;;
+        off) echo "twin is not at the unlock prompt (off or still starting) — try: twin wake"; exit 1 ;;
+      esac
+      echo "twin is waiting for its disk password — enter it below"
+      ssh -t "${HOST}-unlock" || true
+      echo -n "unlocking, waiting for twin to finish booting"
+      sleep 6                                      # let dropbear shut down before re-checking the stage
+      for _ in $(seq 40); do
+        case $(stage) in
+          up)     if ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" true 2>/dev/null; then echo " — up"; exit 0; fi ;;
+          unlock) break ;;                         # still at the prompt: wrong password → ask again
+        esac
+        echo -n "."; sleep 3
+      done
+      echo
+    done
+    echo " — still not up; check with: twin status  (then twin unlock again if it is still waiting)"; exit 1
+    ;;
+  off)     ssh "$HOST" 'systemctl poweroff' 2>/dev/null; echo "twin is shutting down (wake it with: twin wake)" ;;
+  reboot)
+    ssh "$HOST" 'systemctl reboot' 2>/dev/null || true
+    echo -n "twin is rebooting"
+    for _ in $(seq 30); do [[ $(stage) == up ]] || break; sleep 2; done   # wait until it has gone down
+    wait_boot
+    echo " — not back after 3 min; check with: twin status"; exit 1
+    ;;
+  status)
+    if ssh -o ConnectTimeout=2 -o BatchMode=yes "$HOST" true 2>/dev/null; then
+      ssh "$HOST" 'echo "twin is UP — $(uptime -p)"'
+    elif [[ $(stage) == unlock ]]; then echo "twin is waiting for its disk password — run: twin unlock"
+    elif ping -c1 -W1 10.42.0.11 >/dev/null 2>&1; then echo "twin answers ping but SSH is down (booting?)"
+    else echo "twin is OFF (or unreachable) — start it with: twin wake"; fi
+    ;;
+  unlock-screen)
+    # Omarchy has no remote unlock, so type the password into twin's lock screen. The password is read
+    # here without echo and sent on SSH's stdin — never in argv, shell history or twin's process list.
+    [[ -t 0 ]] || { echo "twin unlock-screen needs an interactive terminal"; exit 1; }
+    locked=$(gsh 'OMARCHY_PATH=/usr/share/omarchy omarchy-shell lock isLocked 2>/dev/null')
+    [[ $locked == true ]] || { echo "twin's screen is not locked"; exit 0; }
+    read -rsp "twin password (appspubs): " pw; echo
+    printf '%s' "$pw" | gsh 'wtype -'; unset pw
+    gsh 'wtype -k Return'
+    sleep 2
+    if [[ $(gsh 'OMARCHY_PATH=/usr/share/omarchy omarchy-shell lock isLocked 2>/dev/null') == true ]]; then
+      echo "still locked — wrong password? try again"; exit 1
+    fi
+    echo "twin's screen unlocked"
+    ;;
+  kvm)
+    # lan-mouse (mouse slides off the LG's left edge onto twin) only makes sense when twin has a real
+    # monitor. `auto` (run every 20 s by twin-kvm.timer) turns it on/off to match; Super+F12 always works.
+    has_monitor() {
+      ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" \
+        'grep -lx connected /sys/class/drm/card*-*/status 2>/dev/null | grep -qv Writeback' 2>/dev/null
+    }
+    kvm_set() {   # on|off, only when it changes
+      local want=$1 now; now=$(systemctl --user is-active lan-mouse.service 2>/dev/null || true)
+      if [[ $want == on && $now != active ]]; then
+        systemctl --user start lan-mouse.service
+        ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" 'systemctl --user start lan-mouse.service' 2>/dev/null || true
+        echo "shared mouse ON — ${2:-}"
+      elif [[ $want == off && $now == active ]]; then
+        systemctl --user stop lan-mouse.service
+        echo "shared mouse OFF — ${2:-}"
+      fi
+    }
+    case ${1:-status} in
+      auto)
+        if [[ $(stage) != up ]]; then kvm_set off "twin is not up"
+        elif has_monitor; then kvm_set on "twin has a monitor attached"
+        else kvm_set off "twin is headless (use Super+F12 / twin desktop)"; fi
+        ;;
+      on)  kvm_set on "forced on" ;;
+      off) kvm_set off "forced off" ;;
+      status)
+        echo "shared mouse (lan-mouse): $(systemctl --user is-active lan-mouse.service 2>/dev/null)"
+        if [[ $(stage) != up ]]; then echo "twin: not up"
+        elif has_monitor; then echo "twin: monitor attached"; else echo "twin: headless"; fi
+        echo "auto-switch: $(systemctl --user is-active twin-kvm.timer 2>/dev/null)"
+        ;;
+      *) echo "usage: twin kvm auto|on|off|status"; exit 1 ;;
+    esac
+    ;;
+  link)
+    # Tie twin to this PC's power: used by the twin-link user service and the login autostart.
+    case ${1:-} in
+      start)   # at this PC's boot: wake twin (no waiting — the unlock prompt comes at login)
+        for _ in $(seq 30); do ip -4 addr show dev "$TWIN_IFACE" 2>/dev/null | grep -q 'inet ' && break; sleep 2; done
+        [[ $(stage) == off ]] || { echo "twin already running"; exit 0; }
+        if ! ip -4 addr show dev "$TWIN_IFACE" 2>/dev/null | grep -q 'inet '; then
+          # no IP = no link: twin's NIC is powered down (WoL not armed / power was cut), a packet can't reach it
+          echo "no link on $TWIN_IFACE (carrier=$(cat /sys/class/net/$TWIN_IFACE/carrier 2>/dev/null)) — twin's network card is not listening; start it with its power button"
+          exit 0
+        fi
+        python3 -c "$(sed -n "/^    WOL_PY='/,/^'/p" "$(readlink -f "$0")" | sed '1s/.*WOL_PY=.//;$d')" udp "$TWIN_MAC" "$TWIN_BCAST"
+        echo "wake packet sent to twin"
+        ;;
+      stop)    # at this PC's shutdown: power twin off too, unless jobs are running on it
+        [[ $(stage) == up ]] || exit 0
+        jobs=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" 'tmux ls -F "#S" 2>/dev/null' 2>/dev/null || true)
+        if [[ -n $jobs ]]; then echo "twin left running — jobs active: $(echo $jobs)"; exit 0; fi
+        ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" 'systemctl poweroff' 2>/dev/null || true
+        echo "twin powered off with this PC"
+        ;;
+      prompt)  # at login: once twin reaches the disk prompt, open a terminal to unlock it
+        for _ in $(seq 60); do
+          case $(stage) in
+            up)     exit 0 ;;
+            unlock) exec ptyxis --new-window -x "bash -c '$(readlink -f "$0") unlock; read -rp \"Press Enter to close \"'" ;;
+          esac
+          sleep 3
+        done
+        ;;
+      *) echo "usage: twin link start|stop|prompt"; exit 1 ;;
+    esac
+    ;;
+  help|-h|--help) usage ;;
+  *) echo "unknown command: $cmd"; usage; exit 1 ;;
+esac

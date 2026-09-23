@@ -1,0 +1,395 @@
+.TH TWIN 1 "September 2026" "twinPC" "twinPC Manual"
+.SH NAME
+twin \- run and control processes and AI jobs on the LAN twin PC
+.SH SYNOPSIS
+.B twin
+.I command
+.RI [ args... ]
+.SH DESCRIPTION
+.B twin
+drives the second PC ("twin", Omarchy Linux, AMD RX\ 6600) that is connected to
+this machine by ethernet at
+.BR 10.42.0.11 .
+Everything goes over the SSH alias
+.B twin
+(key login, see
+.IR ~/.ssh/config ).
+.PP
+Jobs run inside
+.BR tmux (1)
+sessions on the twin, so they keep running if this PC disconnects or reboots.
+Each job's output is appended to
+.I ~/jobs/<name>.log
+on the twin. Every job gets
+.B HSA_OVERRIDE_GFX_VERSION=10.3.0
+(needed for ROCm on the RX\ 6600) and the PyTorch ROCm venv
+.I ~/ai-env
+first on
+.BR PATH ,
+so a plain
+.B python
+uses the GPU.
+.SH JOBS
+.TP
+.BI "run " "name cmd..."
+Start
+.I cmd
+as a background job called
+.IR name .
+Quote the command if it has pipes or
+.BR && .
+.TP
+.B ls
+List running jobs (tmux sessions).
+.TP
+.BI "logs " name " \fR[\fB-f\fR]"
+Show the last 200 lines of the job's log;
+.B -f
+follows it live (Ctrl-C stops following, not the job).
+.TP
+.BI "attach " name
+Attach to the job's live terminal. Detach again with
+.BR "Ctrl-b d" .
+.TP
+.BI "send " "name text..."
+Type
+.I text
+followed by Enter into the job's terminal \(em answer a prompt, or give an
+interactive Claude session its next instruction.
+.TP
+.BI "kill " name
+Stop the job and close its session.
+.SH CLAUDE CODE
+.TP
+.BI "claude " "name \fR[\fPdir\fR]\fP"
+Start an interactive Claude Code session on the twin in
+.I dir
+(default: home). Then use
+.B twin attach
+or
+.BR "twin send" .
+.TP
+.BI "cc " "name dir prompt..."
+Run a headless
+.B claude -p
+task in
+.I dir
+as a logged job. Runs with
+.BR "--permission-mode acceptEdits" ,
+so it edits files without asking.
+.TP
+.BR "bizdev " [ \fItask... ]
+Business-development agent for the IT services company, using the
+.B it-services-bizdev
+Claude Code skill installed on the twin only
+.RI ( ~/.claude/skills/it-services-bizdev ).
+It works in
+.I ~/bizdev
+on the twin (profile.md, strategy.md, pipeline.csv, drafts/, prospects/) and
+never uses the company name. With no task it opens an interactive Claude session
+(tmux session
+.BR bizdev );
+with a task it runs headless as a logged job, allowed to search the web, write
+files in ~/bizdev and run the pipeline script only.
+.SH MONITORING AND PROCESSES
+.TP
+.B gpu
+GPU busy %, VRAM used/total, temperature, and models Ollama has loaded.
+.TP
+.B top
+Load, memory and the top 15 processes by CPU.
+.TP
+.BI "ps " pattern
+List processes whose command line matches
+.IR pattern .
+.TP
+.BI "pkill " pattern
+Kill processes whose command line matches
+.IR pattern .
+.SH FILES AND SHELL
+.TP
+.BI "push " "local \fR[\fPremote\fR]\fP"
+rsync
+.I local
+to the twin (default destination
+.IR ~/work/ ).
+.TP
+.BI "pull " "remote \fR[\fPlocal\fR]\fP"
+rsync from the twin to this PC (default: current directory).
+.TP
+.BR "sh " [ \fIcmd... ]
+Open a shell on the twin, or run a one-off command there with the job
+environment.
+.TP
+.B models
+List Ollama models installed on the twin.
+.SH SHARED MOUSE AND KEYBOARD
+While the twin has its own monitor (to the LEFT of the LG),
+.B lan-mouse
+works like one extended desk: push the mouse off the LG's left edge and it
+appears on the twin's screen, with the keyboard following; push it off the
+twin's right edge to come back. It runs as the user service
+.I ~/.config/systemd/user/lan-mouse.service
+on both sides, but on this PC it is switched automatically: the timer
+.I twin-kvm.timer
+runs
+.B twin kvm auto
+30 s after boot and every 20 s, and keeps lan-mouse on only while the twin is up
+.B and
+has a physical monitor connected (HDMI/DP status in
+.IR /sys/class/drm ).
+When the twin is off or headless it is turned off, so the mouse never
+disappears off the edge onto a screen that isn't there \(em use
+.B Super+F12
+instead.
+.B twin kvm status
+shows the current state;
+.B twin kvm on
+/
+.B off
+override it until the next check. Configured in
+.I ~/.config/lan-mouse/config.toml
+(UDP 4242, TLS; each side only accepts the other's certificate fingerprint).
+If the pointer ever gets stuck on the twin, press
+.B Ctrl+Shift+Super+Alt
+(left-hand keys) to release it.
+.SH DESKTOP (GUI)
+The twin runs Hyprland. These commands reach its logged-in desktop session over
+SSH, so they work with or without a monitor attached.
+.TP
+.BR "desktop " [ stop ]
+Toggle the twin's screen fullscreen on this PC (also bound to
+.B Super+F12
+in GNOME). Meant for a headless twin: with no monitor plugged in, a virtual
+screen matching this PC's LG monitor (2560x1080,
+.BR TWIN_HEADLESS_MODE )
+is created, so the view is pixel-exact.
+.B wayvnc
+runs on the twin bound to 127.0.0.1:5900 only and is reached through an SSH
+tunnel (local port 5901,
+.BR TWIN_VNC_PORT );
+the viewer is Remmina with the profile
+.IR ~/.local/share/remmina/twin.remmina .
+.B stop
+closes the view, wayvnc and the tunnel.
+.TP
+.BR "gui shot " [ \fIfile ]
+Screenshot the twin's screen to this PC (default
+.IR ~/Pictures/twin/twin-<date>.png )
+and print the path.
+.TP
+.BI "gui open " cmd...
+Launch a program on the twin's desktop.
+.TP
+.B gui windows
+List open windows (workspace, class, title).
+.TP
+.BI "gui focus " class
+Focus the first window whose class matches (case-insensitive), or pass a full
+Hyprland selector such as
+.BR title:Firefox .
+.TP
+.BR "gui close" ", " "gui ws " \fIn
+Close the focused window; switch to workspace
+.IR n .
+.TP
+.BI "gui type " text
+Type text into the focused window
+.RB ( wtype ).
+.TP
+.BI "gui key " combo
+Press a key combination, e.g.
+.BR ctrl+c ,
+.BR ctrl+shift+t ,
+.BR super+Return ,
+.BR Escape .
+.TP
+.BR "gui click " [ left | right | middle "] [\fIx y\fR]"
+Click, optionally after moving the pointer to
+.I x y
+(screen pixels). Uses
+.BR ydotool ,
+which needs the twin user in the
+.B input
+group and a udev rule for
+.IR /dev/uinput .
+.TP
+.BI "gui move " "x y" "\fR, \fBgui scroll " n
+Move the pointer; scroll by
+.I n
+(positive = down).
+.TP
+.BI "gui hypr " args...
+Run any
+.B hyprctl
+command, e.g.
+.BR "twin gui hypr dispatch 'hl.dsp.window.fullscreen()'"
+(Hyprland 0.56 dispatchers are Lua).
+.SH SOUND
+The twin plays through this PC's speakers (whatever output is selected here, e.g.
+Bluetooth). The user service
+.I twin-audio.service
+on this PC forwards its PipeWire socket over SSH to the twin's 127.0.0.1:4713 \(em no
+port is opened on this PC \(em and the twin has a "Main PC speakers" output
+.RI ( ~/.config/pipewire/pipewire.conf.d/main-pc-speakers.conf )
+that reconnects every 5 s. Copies of both are in
+.IR ~/projects/twinPC/audio/ .
+.TP
+.BR "audio " [ on | off | status | test ]
+.B on
+makes "Main PC speakers" the twin's default output and moves playing streams to it;
+.B off
+switches back to the twin's own output;
+.B test
+plays a short tone on the twin.
+.SH POWER
+.TP
+.B wake
+Send a Wake-on-LAN magic packet to the twin's ethernet card
+.RB ( 30:c5:99:ab:f7:fe )
+on the LAN broadcast
+.BR 10.42.0.255 ,
+then wait up to 3 minutes. When the twin reaches its disk-encryption prompt
+(detected by the boot-time SSH server's
+.B dropbear
+banner), it asks for the disk password right there and waits until the system
+is fully up \(em no monitor or keyboard on the twin is needed. Requires Wake-on-LAN enabled in the twin's BIOS (ASUS:
+Advanced \(-> APM Configuration: ErP Ready = Disabled, Power On By PCI-E =
+Enabled).
+.TP
+.B unlock
+The twin's root disk is LUKS-encrypted. At boot, a small SSH server (dropbear)
+in the initramfs waits for the passphrase on
+.B root@10.42.0.11
+(ssh alias
+.BR twin-unlock ).
+.B twin unlock
+connects to it, asks for the passphrase here (up to 3 tries), and waits until
+the system is up. Use it on its own after
+.B twin reboot
+or a power cut. Needs an interactive terminal. Typing the passphrase on the
+twin's own keyboard still works too.
+.TP
+.B off
+Shut the twin down.
+.TP
+.B reboot
+Reboot the twin, then ask for the disk password when it reaches the
+encryption prompt and wait until it is back up (same as the end of
+.BR wake ).
+.TP
+.B status
+Report whether the twin is up (with uptime), waiting for its disk password,
+booting, or off.
+.SH STARTING AND STOPPING WITH THIS PC
+The twin follows this PC's power automatically:
+.TP
+.B At boot
+The user service
+.I ~/.config/systemd/user/twin-link.service
+(user lingering is on, so it runs before login) calls
+.B twin link start
+and sends the Wake-on-LAN packet.
+.TP
+.B At login
+.I ~/.config/autostart/twin-unlock.desktop
+runs
+.BR "twin link prompt" ,
+which opens a terminal with
+.B twin unlock
+as soon as the twin reaches its disk-password prompt.
+.TP
+.B At shutdown
+The service's stop step,
+.BR "twin link stop" ,
+powers the twin off \(em unless tmux jobs are running on it, in which case the
+twin is left on.
+.PP
+Disable it with
+.B systemctl --user disable twin-link.service
+and delete the autostart file.
+.SH OTHER WAYS TO USE THE TWIN
+.TP
+.B Ollama
+The twin's Ollama (ROCm, GPU) listens on
+.BR http://10.42.0.11:11434 .
+.I ~/.bashrc
+exports
+.B OLLAMA_HOST
+and
+.B OLLAMA_HOST_URL
+to it, so
+.BR "ollama run" ,
+.BR ai ,
+.B why
+and the smart terminal all use the twin's GPU.
+.TP
+.B Docker
+.B docker --context twin
+.I ...
+runs containers on the twin
+.RB ( "docker context use twin"
+to make it the default,
+.B docker context use default
+to switch back).
+.TP
+.B SSH
+.B ssh twin
+for a plain login.
+.SH EXAMPLES
+.nf
+twin push ./myproject work/
+twin run train 'cd ~/work/myproject && python train.py --epochs 10'
+twin logs train -f
+twin gpu
+twin kill train
+
+twin claude agent1 ~/work/myproject
+twin send agent1 "add unit tests for utils.py"
+twin attach agent1
+
+twin cc fixtests ~/work/myproject "run the tests and fix any failures"
+twin bizdev "find 15 UK agencies that could use white-label React Native help"
+ollama run gemma3:4b "hello"
+docker --context twin run --rm hello-world
+
+twin desktop                       # twin's screen in a window, use your mouse on it
+twin gui open firefox
+twin gui focus firefox
+twin gui key ctrl+l; twin gui type "ollama.com"; twin gui key Return
+twin gui shot                      # → ~/Pictures/twin/twin-<date>.png
+.fi
+.SH ENVIRONMENT
+.TP
+.B TWIN_HOST
+SSH host to use instead of
+.BR twin .
+.TP
+.B TWIN_MAC
+MAC address used by
+.B twin wake
+(default 30:c5:99:ab:f7:fe).
+.TP
+.B TWIN_BCAST
+Broadcast address used by
+.B twin wake
+(default 10.42.0.255).
+.SH NOTES
+Twin's idle lock and screensaver are disabled with Omarchy's own switch
+.RB ( "omarchy-toggle-idle stay-awake" ,
+state file
+.IR ~/.local/state/omarchy/indicators/stay-awake ),
+because a locked screen would block remote use when it is headless. Omarchy has
+no remote unlock; if it ever locks, type the password on the lock screen (via
+the shared mouse/keyboard or
+.BR Super+F12 ).
+Undo with
+.BR "twin sh omarchy-toggle-idle allow-idle" .
+.PP
+The RX\ 6600 has 8\ GB VRAM: models up to ~8B parameters at Q4 fit fully on the
+GPU; larger ones spill onto the CPU and get much slower.
+.SH SEE ALSO
+.BR ssh (1),
+.BR tmux (1),
+.BR rsync (1),
+.BR ollama (1)
