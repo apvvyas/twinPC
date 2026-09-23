@@ -49,6 +49,13 @@ class ClipboardPlanTests(unittest.TestCase):
         self.assertIn("/usr/bin/gsettings", enable)
         self.assertIn("enabled-extensions", enable)
 
+    def test_updates_take_effect(self):
+        steps = {s.id: s for s in clip_steps(PROFILE)}
+        r = FakeRunner()
+        steps["clipboard.main.link"].check(S.Ctx({}, r, REPO))
+        self.assertIn("--selftest --fresh", r.calls[-1][1])
+        self.assertIn("try-restart twin-clip.service", applied(steps["clipboard.main.unit"], "main")[1])
+
     def test_relogin_is_remembered_for_this_login(self):
         [st] = [s for s in clip_steps(PROFILE) if s.id == "clipboard.main.relogin"]
         self.assertIsNone(st.apply)

@@ -58,7 +58,16 @@ class ShelfPlanTests(unittest.TestCase):
         steps = {s.id: s for s in shelf_steps(PROFILE)}
         r = FakeRunner()
         steps["shelf.twin.link"].check(S.Ctx({}, r, REPO))
-        self.assertIn("--selftest --socket shelf.sock", r.calls[-1][1])
+        self.assertIn("--selftest --fresh --socket shelf.sock", r.calls[-1][1])
+
+    def test_updates_take_effect(self):
+        steps = {s.id: s for s in shelf_steps(PROFILE)}
+        r = FakeRunner()
+        steps["shelf.main.link"].check(S.Ctx({}, r, REPO))
+        self.assertIn("--selftest --fresh", r.calls[-1][1])
+        self.assertIn("restart twin-clip.service twin-shelf.service", applied(steps["shelf.main.link"], "main")[1])
+        for unit in ("shelf.main.unit", "shelf.twin.unit", "shelf.twin.command"):
+            self.assertIn("try-restart twin-shelf.service", applied(steps[unit], "twin" if ".twin." in unit else "main")[1])
 
     def test_unsupported_desktops(self):
         for machine, desktop, reason in [

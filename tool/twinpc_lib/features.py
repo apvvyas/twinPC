@@ -311,13 +311,14 @@ def _clipboard(profile, repo, v):
         file_step("clipboard.twin.agent", "clipboard", "twin", "$HOME/.local/bin/twin-clipd",
                   _read(repo, "clip/twin-clipd"), mode="755", describe="install twin-clipd on the twin"),
         file_step("clipboard.main.unit", "clipboard", "main", "$HOME/.config/systemd/user/twin-clip.service",
-                  repo_unit(repo, "main/twin-clip.service").replace(" --host twin\n", f" --host {v['host']}\n")),
+                  repo_unit(repo, "main/twin-clip.service").replace(" --host twin\n", f" --host {v['host']}\n"),
+                  after="systemctl --user daemon-reload && systemctl --user try-restart twin-clip.service"),
         unit_step("clipboard.main.service", "clipboard", "main", "twin-clip.service"),
         *md.clipboard_main_steps("clipboard", repo),
         *td.clipboard_twin_steps("clipboard", repo),
         cmd_step("clipboard.main.link", "clipboard", "main", "connect the clipboard service to the twin",
-                 check="~/.local/bin/twin-clipd --selftest >/dev/null",
-                 apply="systemctl --user restart twin-clip.service && sleep 3 && ~/.local/bin/twin-clipd --selftest"),
+                 check="~/.local/bin/twin-clipd --selftest --fresh >/dev/null",
+                 apply="systemctl --user restart twin-clip.service && sleep 3 && ~/.local/bin/twin-clipd --selftest --fresh"),
     ]
 
 
@@ -347,21 +348,25 @@ def _shelf(profile, repo, v):
                  check=f'[ "$(readlink ~/.local/bin/twin-shelf)" = "{r}/clip/twin-shelf" ]',
                  apply=f'mkdir -p ~/.local/bin && ln -sf "{r}/clip/twin-shelf" ~/.local/bin/twin-shelf'),
         file_step("shelf.twin.command", "shelf", "twin", "$HOME/.local/bin/twin-shelf",
-                  _read(repo, "clip/twin-shelf"), mode="755", describe="install twin-shelf on the twin"),
+                  _read(repo, "clip/twin-shelf"), mode="755", describe="install twin-shelf on the twin",
+                  after="systemctl --user try-restart twin-shelf.service"),
         file_step("shelf.main.unit", "shelf", "main", "$HOME/.config/systemd/user/twin-shelf.service",
-                  repo_unit(repo, "main/twin-shelf.service").replace("--edge left\n", f"--edge {main_edge}\n")),
+                  repo_unit(repo, "main/twin-shelf.service").replace("--edge left\n", f"--edge {main_edge}\n"),
+                  after="systemctl --user daemon-reload && systemctl --user try-restart twin-shelf.service"),
         unit_step("shelf.main.service", "shelf", "main", "twin-shelf.service"),
         file_step("shelf.twin.unit", "shelf", "twin", "$HOME/.config/systemd/user/twin-shelf.service",
-                  _read(repo, "twinpc/twin-shelf.service").replace("--edge right ", f"--edge {twin_edge} ")),
+                  _read(repo, "twinpc/twin-shelf.service").replace("--edge right ", f"--edge {twin_edge} "),
+                  after="systemctl --user daemon-reload && systemctl --user try-restart twin-shelf.service"),
         unit_step("shelf.twin.service", "shelf", "twin", "twin-shelf.service"),
         *md.shelf_main_steps("shelf", repo),
         cmd_step("shelf.main.link", "shelf", "main", "check the shelf app is connected on this PC",
-                 check="~/.local/bin/twin-shelf --selftest >/dev/null",
-                 apply="systemctl --user restart twin-shelf.service && sleep 3 && ~/.local/bin/twin-shelf --selftest"),
+                 check="~/.local/bin/twin-shelf --selftest --fresh >/dev/null",
+                 apply="systemctl --user restart twin-clip.service twin-shelf.service && sleep 5"
+                       " && ~/.local/bin/twin-shelf --selftest --fresh"),
         cmd_step("shelf.twin.link", "shelf", "twin", "check the shelf app is connected on the twin",
-                 check="~/.local/bin/twin-shelf --selftest --socket shelf.sock >/dev/null",
+                 check="~/.local/bin/twin-shelf --selftest --fresh --socket shelf.sock >/dev/null",
                  apply="systemctl --user restart twin-shelf.service && sleep 3"
-                       " && ~/.local/bin/twin-shelf --selftest --socket shelf.sock"),
+                       " && ~/.local/bin/twin-shelf --selftest --fresh --socket shelf.sock"),
     ]
 
 

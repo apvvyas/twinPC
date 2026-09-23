@@ -19,6 +19,14 @@ STRIP_TITLE, SHELF_TITLE = "twinPC drop strip", "twinPC shelf"    # the GNOME ex
 HIDE_AFTER = 120                          # seconds without news before the shelf hides itself
 RETRY = 5                                 # seconds between attempts to reach twin-clipd
 EMPTY_SHA = hashlib.sha256(b"").hexdigest()
+
+
+def code_hash():
+    """A fingerprint of this program's file as it is on disk now."""
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+
+
+CODE = code_hash()                        # the code this process runs; --selftest --fresh compares the two
 CSS = b"""
 .strip { background: rgba(53, 132, 228, 0.35); border-radius: 3px; }
 .strip.hover { background: rgba(53, 132, 228, 0.95); }
@@ -125,7 +133,7 @@ class Link:
             try:
                 s = socket.socket(socket.AF_UNIX)
                 s.connect(str(self.sock))
-                s.sendall(encode("hello", role="shelf"))
+                s.sendall(encode("hello", role="shelf", code=CODE))
                 with self.lock:
                     self.conn = s
                 stream = s.makefile("rb")
@@ -148,7 +156,7 @@ def send_drop(sock, paths):
     s.close()
 
 
-def selftest(sock):
+def selftest(sock, fresh=False):
     try:
         s = socket.socket(socket.AF_UNIX)
         s.settimeout(5)
@@ -160,6 +168,9 @@ def selftest(sock):
         print("shelf: twin-clipd isn't running here")
         return 2
     if h and h.get("shelf"):
+        if fresh and h.get("shelf_code") != code_hash():
+            print("shelf: running an older version — restart needed (systemctl --user restart twin-shelf.service)")
+            return 3
         print("shelf: running")
         return 0
     print("shelf: app not running (twin shelf on)")
@@ -330,11 +341,12 @@ def main(argv=None):
     ap.add_argument("--edge", choices=EDGES, default="left", help="the screen edge that faces the other PC")
     ap.add_argument("--socket", default="clip.sock", help="twin-clipd's socket name (on the twin: shelf.sock)")
     ap.add_argument("--selftest", action="store_true", help="is the shelf app running and connected?")
+    ap.add_argument("--fresh", action="store_true", help="with --selftest: also fail (3) if it runs older code")
     ap.add_argument("--drop", nargs="+", metavar="PATH", help="send these files to the other PC and exit")
     a = ap.parse_args(argv)
     sock = socket_path(a.socket)
     if a.selftest:
-        return selftest(sock)
+        return selftest(sock, a.fresh)
     if a.drop:
         send_drop(sock, a.drop)
         return 0

@@ -282,6 +282,10 @@ class ShelfCoreTests(unittest.TestCase):
         self.assertEqual(pull[:7], push[:7])
         self.assertEqual(pull[7:], [*(f"twin:{p}" for p in paths), "/home/m/.cache/twinpc/shelf/4/"])
 
+    def test_pulled_paths_escape_remote_wildcards(self):
+        pull = cd.rsync_pull("twin", ["/h/photo[1].jpg", "/h/a*b?.txt", "/h/back\\slash"], "/d")
+        self.assertEqual(pull[7:10], ["twin:/h/photo\\[1].jpg", "twin:/h/a\\*b\\?.txt", "twin:/h/back\\\\slash"])
+
     def test_progress_lines(self):
         self.assertEqual(cd.progress("      1,234,567  45%    1.20MB/s    0:00:03"), 45)
         self.assertEqual(cd.progress("  32,768 100%   31.25MB/s    0:00:00 (xfr#1, to-chk=0/1)"), 100)

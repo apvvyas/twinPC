@@ -67,6 +67,7 @@ class CliTests(unittest.TestCase):
         """A one-shot twin-clipd stand-in; returns the list the received headers land in."""
         got = []
         server = socket.socket(socket.AF_UNIX)
+        (self.run_dir / "twinpc" / "clip.sock").unlink(missing_ok=True)
         server.bind(str(self.run_dir / "twinpc" / "clip.sock"))
         server.listen()
 
@@ -90,6 +91,14 @@ class CliTests(unittest.TestCase):
         r = self.run_cli("--selftest")
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertIn("running", r.stdout)
+
+    def test_selftest_fresh(self):
+        self.fake_daemon({"shelf": True, "shelf_code": "old"})
+        r = self.run_cli("--selftest", "--fresh")
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertIn("restart", r.stdout)
+        self.fake_daemon({"shelf": True, "shelf_code": sh.code_hash()})
+        self.assertEqual(self.run_cli("--selftest", "--fresh").returncode, 0)
 
     def test_selftest_without_the_app(self):
         self.fake_daemon({"shelf": False})

@@ -14,6 +14,9 @@ from tests.test_clipd_link import WL_COPY, WL_PASTE
 RSYNC = """#!/usr/bin/env python3
 # stub rsync: copies local paths, reading "twin:/x" as "/x"; RSYNC_STUB_FAIL=1 makes it fail
 import os, shutil, sys, time
+if os.environ.get("RSYNC_STUB_EXIT23"):
+    print('rsync: [sender] link_stat "/gone" failed: No such file or directory (2)')
+    sys.exit(23)
 if os.environ.get("RSYNC_STUB_FAIL"):
     print("rsync: connection unexpectedly closed (stub)")
     sys.exit(12)
@@ -186,6 +189,31 @@ class ShelfLinkTests(unittest.TestCase):
         main, main_in = self.shelf_client(self.main_sock)
         failed = self.frames_until(main_in, "failed")[-1]
         self.assertIn("not enough space", failed["error"])
+
+    def test_a_pull_that_copied_nothing_is_a_failure(self):
+        # the file vanished on the twin between the drop and the pull: rsync exits 23 and copies nothing
+        main, main_in, twin, twin_in = self.both_linked(RSYNC_STUB_EXIT23="1")
+        f = self.d / "gone.txt"
+        f.write_text("x")
+        twin.sendall(cd.encode("drop", paths=[str(f)]))
+        failed = self.frames_until(main_in, "failed")[-1]
+        self.assertIn("nothing was copied", failed["error"])
+        self.wait(lambda: not Path(failed["dir"]).exists(), "the empty folder to be removed")
+
+    def test_selftest_fresh_notices_a_restart_is_needed(self):
+        copy = self.d / "twin-clipd"
+        copy.write_text(CLIPD.read_text())
+        e = {**os.environ, "XDG_RUNTIME_DIR": str(self.main_run), "XDG_CACHE_HOME": str(self.main_cache),
+             "PATH": f"{self.stubs}:{os.environ['PATH']}"}
+        self.svc = subprocess.Popen([sys.executable, str(copy), "--agent-cmd", "false"], env=e,
+                                    stderr=subprocess.DEVNULL)
+        self.wait(self.main_sock.exists, "the service socket")
+        fresh = [sys.executable, str(copy), "--selftest", "--fresh"]
+        self.assertNotEqual(subprocess.run(fresh, env=e, capture_output=True).returncode, 3)
+        copy.write_text(copy.read_text() + "\n# updated\n")              # a git pull changed the code
+        r = subprocess.run(fresh, env=e, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertIn("restart", r.stdout)
 
     def test_unusable_paths_on_the_twin_are_not_forwarded(self):
         main, main_in, twin, twin_in = self.both_linked()

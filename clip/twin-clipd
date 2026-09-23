@@ -44,6 +44,14 @@ SPACE_MARGIN = 64 * MB                   # kept free on the receiving disk
 SHELF_FIELDS = ("dir", "paths", "state", "progress", "error")
 
 
+def code_hash():
+    """A fingerprint of this program's file as it is on disk now."""
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+
+
+CODE = code_hash()                       # the code this process runs; --selftest --fresh compares the two
+
+
 class FrameError(Exception):
     pass
 
@@ -330,7 +338,12 @@ def rsync_push(host, paths, dest):
 def rsync_pull(host, paths, dest):
     """rsync argv copying `paths` on `host` into the local folder `dest`."""
     return ["rsync", "-a", "--protect-args", "--info=progress2", "-e", "ssh -o BatchMode=yes", "--",
-            *(f"{host}:{p}" for p in paths), f"{dest}/"]
+            *(f"{host}:{remote_literal(p)}" for p in paths), f"{dest}/"]
+
+
+def remote_literal(path):
+    """Escape the characters the remote rsync would still expand as wildcards, even with --protect-args."""
+    return re.sub(r"([\\*?\[])", r"\\\1", path)
 
 
 def progress(line):
@@ -459,7 +472,7 @@ def agent(inp, out, cache, shelf_sock=None):
     """The twin side: frames from the main PC on `inp` go onto the clipboard; clipboard changes go to `out`."""
     wayland_env()
     echo, write = Echo(), threading.Lock()
-    shelf, shelf_root = Local(), cache.parent / "shelf"
+    shelf, shelf_root, shelf_code = Local(), cache.parent / "shelf", [None]
 
     def send(frame):
         with write:
@@ -505,9 +518,10 @@ def agent(inp, out, cache, shelf_sock=None):
                 h = frame[0]
                 if h["kind"] == "hello" and h.get("role") == "shelf":
                     shelf.set(conn)
+                    shelf_code[0] = h.get("code")
                     shelf.send(encode("link", up=True))        # the agent only runs while linked
                 elif h["kind"] == "hello":
-                    conn.sendall(encode("hello", shelf=shelf.connected(), link=True))
+                    conn.sendall(encode("hello", shelf=shelf.connected(), link=True, shelf_code=shelf_code[0]))
                 elif h["kind"] == "drop":
                     paths = clean_paths(h.get("paths"))
                     if paths is None or not all(os.path.lexists(p) for p in paths):
@@ -579,6 +593,7 @@ class Service:
         self.twin = self.ext = None
         self.last = "nothing yet"
         self.wants = 0                                     # numbers each want, so late answers are recognised
+        self.shelf_code = None                             # the shelf app's code fingerprint, from its hello
 
     def serve(self):
         self.sock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -662,13 +677,15 @@ class Service:
                         self.ext = conn
                 elif h["kind"] == "hello" and h.get("role") == "shelf":
                     self.shelf.set(conn)
+                    self.shelf_code = h.get("code")
                     with self.state:
                         up = self.twin is not None
                     self.shelf.send(encode("link", up=up))
                 elif h["kind"] == "hello":
                     with self.state:
                         status = {"twin": self.twin is not None, "extension": self.ext is not None,
-                                  "shelf": self.shelf.connected(), "last": self.last}
+                                  "shelf": self.shelf.connected(), "last": self.last,
+                                  "code": CODE, "shelf_code": self.shelf_code}
                     conn.sendall(encode("hello", **status))
                 elif h["kind"] == "offer":
                     mimes = h.get("mimes", [])
@@ -805,6 +822,14 @@ class Service:
         self.shelf.send(shelf_frame(dir=str(dest), state="receiving", progress=0))
         rc, err = run_rsync(rsync_pull(self.host, paths, dest),
                             lambda pct: self.shelf.send(shelf_frame(dir=str(dest), state="receiving", progress=pct)))
+        if rc in RSYNC_OK and rc != 0:
+            log(f"some files from the twin were skipped: {err}")
+            if not any(os.path.lexists(dest / Path(p).name) for p in paths):
+                rc, err = rc, f"nothing was copied — {err}"
+                shutil.rmtree(dest, ignore_errors=True)
+                self.shelf.send(shelf_frame(dir=str(dest), state="failed", error=err))
+                notify(f"files from the twin were not received: {err}")
+                return
         if rc in RSYNC_OK:
             ready = shelf_frame(dir=str(dest), state="ready", progress=100,
                                 paths=[str(dest / Path(p).name) for p in paths])
@@ -817,7 +842,7 @@ class Service:
             notify(f"files from the twin were not received: {err}")
 
 
-def selftest(sock_path):
+def selftest(sock_path, fresh=False):
     try:
         s = socket.socket(socket.AF_UNIX)
         s.settimeout(5)
@@ -831,6 +856,9 @@ def selftest(sock_path):
           f" · GNOME extension {'connected' if h.get('extension') else 'not loaded (log out and back in)'}"
           f" · shelf app {'connected' if h.get('shelf') else 'not running'}"
           f" · last: {h.get('last')}")
+    if fresh and h.get("code") != code_hash():
+        print("twin-clipd is running an older version — restart needed (systemctl --user restart twin-clip.service)")
+        return 3
     return 0 if h.get("twin") else 1
 
 
@@ -838,6 +866,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="twin-clipd", description="share the clipboard with the twin PC")
     ap.add_argument("--agent", action="store_true", help="the twin side: frames on stdin/stdout")
     ap.add_argument("--selftest", action="store_true", help="is the service running and the twin connected?")
+    ap.add_argument("--fresh", action="store_true", help="with --selftest: also fail (3) if it runs older code")
     ap.add_argument("--host", default=os.environ.get("TWIN_HOST") or "twin", help="ssh alias of the twin")
     ap.add_argument("--agent-cmd", help=argparse.SUPPRESS)      # tests: run the agent without ssh
     a = ap.parse_args(argv)
@@ -847,7 +876,7 @@ def main(argv=None):
     if a.agent:
         return agent(sys.stdin.buffer, sys.stdout.buffer, cache, run / "twinpc" / "shelf.sock")
     if a.selftest:
-        return selftest(sock)
+        return selftest(sock, a.fresh)
     Service(a.host, sock, cache, shlex.split(a.agent_cmd) if a.agent_cmd else None).serve()
     return 0
 
