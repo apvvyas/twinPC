@@ -80,5 +80,126 @@ class EchoTests(unittest.TestCase):
         self.assertTrue(e.is_new(b"a"))
 
 
+def member(name, data=None, type=tarfile.REGTYPE, linkname=""):
+    info = tarfile.TarInfo(name)
+    info.type, info.linkname, info.mode = type, linkname, 0o644
+    return info, (data if type == tarfile.REGTYPE else None)
+
+
+def tar_of(*members):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        for info, data in members:
+            if data is not None:
+                info.size = len(data)
+            t.addfile(info, io.BytesIO(data) if data is not None else None)
+    return buf.getvalue()
+
+
+class FilesTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_file_paths(self):
+        f = self.d / "a b.txt"
+        f.write_text("x")
+        uris = f.as_uri().encode() + b"\r\n"
+        self.assertEqual(cd.file_paths(uris), [f])
+        self.assertEqual(cd.file_paths(b"copy\n" + uris), [f])            # x-special/gnome-copied-files
+        self.assertIsNone(cd.file_paths(b"https://example.com/\n"))
+        self.assertIsNone(cd.file_paths((self.d / "missing").as_uri().encode()))
+        self.assertIsNone(cd.file_paths(b""))
+
+    def test_pack_unpack_round_trip(self):
+        src = self.d / "src"
+        (src / "dir").mkdir(parents=True)
+        (src / "one.txt").write_text("1")
+        (src / "dir" / "two.txt").write_text("2")
+        tops = cd.unpack(cd.pack([src / "one.txt", src / "dir"]), self.d / "cache")
+        self.assertEqual([p.name for p in tops], ["one.txt", "dir"])
+        self.assertEqual((tops[1] / "two.txt").read_text(), "2")
+        self.assertEqual(tops[0].parent, self.d / "cache" / "1")
+
+    def test_pack_refuses_over_the_limit(self):
+        f = self.d / "big"
+        f.write_bytes(b"x" * 100)
+        old, cd.FILES_LIMIT = cd.FILES_LIMIT, 50
+        try:
+            with self.assertRaises(cd.TooBig):
+                cd.pack([f])
+        finally:
+            cd.FILES_LIMIT = old
+
+    def test_unsafe_archives_write_nothing(self):
+        cases = {
+            "dotdot": tar_of(member("ok.txt", b"ok"), member("../evil.txt", b"x")),
+            "absolute": tar_of(member("ok.txt", b"ok"), member("/tmp/evil.txt", b"x")),
+            "link-out": tar_of(member("ok.txt", b"ok"), member("a", type=tarfile.SYMTYPE, linkname="/"),
+                               member("a/evil.txt", b"x")),
+            "device": tar_of(member("ok.txt", b"ok"), member("dev", type=tarfile.CHRTYPE)),
+        }
+        for name, body in cases.items():
+            with self.subTest(name):
+                cache = self.d / name
+                with self.assertRaises(tarfile.TarError):
+                    cd.unpack(body, cache)
+                self.assertEqual(list(cache.glob("*/*")), [])
+
+    def test_only_the_newest_five_are_kept(self):
+        cache = self.d / "cache"
+        for i in range(7):
+            cd.unpack(tar_of(member(f"f{i}.txt", b"x")), cache)
+        self.assertEqual(sorted(int(p.name) for p in cache.iterdir()), [3, 4, 5, 6, 7])
+
+    def test_uri_list(self):
+        p = self.d / "a b"
+        p.write_text("")
+        self.assertEqual(cd.uri_list([p]), (p.resolve().as_uri() + "\r\n").encode())
+
+    def test_incoming(self):
+        self.assertEqual(cd.incoming({"kind": "text", "mime": cd.TEXT_MIME}, b"hi", self.d), (cd.TEXT_MIME, b"hi"))
+        mime, content = cd.incoming({"kind": "files"}, tar_of(member("n.txt", b"n")), self.d / "c")
+        self.assertEqual(mime, "text/uri-list")
+        self.assertEqual(content, cd.uri_list([self.d / "c" / "1" / "n.txt"]))
+
+
+class BuildFrameTests(unittest.TestCase):
+    def frame(self, mimes, store, echo=None):
+        f = cd.build_frame(mimes, lambda m: store[m], echo or cd.Echo())
+        return cd.read_frame(io.BytesIO(f)) if f else None
+
+    def test_text_is_sent_once(self):
+        e, store = cd.Echo(), {"text/plain": b"hi"}
+        h, body = self.frame(["text/plain"], store, e)
+        self.assertEqual((h["kind"], h["mime"], body), ("text", cd.TEXT_MIME, b"hi"))
+        self.assertIsNone(self.frame(["text/plain"], store, e))
+
+    def test_links_fall_back_to_text(self):
+        store = {"text/uri-list": b"https://example.com/\r\n", "text/plain": b"https://example.com/"}
+        h, body = self.frame(["text/uri-list", "text/plain"], store)
+        self.assertEqual((h["kind"], body), ("text", b"https://example.com/"))
+
+    def test_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d, "x.txt")
+            f.write_text("x")
+            h, body = self.frame(["text/uri-list"], {"text/uri-list": f.as_uri().encode()})
+            self.assertEqual(h["kind"], "files")
+            self.assertEqual(tarfile.open(fileobj=io.BytesIO(body)).getnames(), ["x.txt"])
+
+    def test_image(self):
+        h, body = self.frame(["image/png", "text/html"], {"image/png": b"\x89PNG"})
+        self.assertEqual((h["kind"], h["mime"], body), ("image", "image/png", b"\x89PNG"))
+
+    def test_empty_and_too_big(self):
+        self.assertIsNone(self.frame(["text/plain"], {"text/plain": b""}))
+        with self.assertRaises(cd.TooBig):
+            self.frame(["text/plain"], {"text/plain": b"x" * (cd.LIMITS["text"] + 1)})
+
+
 if __name__ == "__main__":
     unittest.main()

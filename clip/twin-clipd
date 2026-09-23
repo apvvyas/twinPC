@@ -8,8 +8,14 @@ Twin (--agent): watches the clipboard with `wl-paste --watch` and sets it with `
 A frame is one JSON header line — {"v":1,"kind":…,"size":n,"sha":"<sha256 of body>",…} — then n bytes.
 """
 import hashlib
+import io
 import json
+import os
+import shutil
+import tarfile
 import threading
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 MB = 1024 * 1024
 LIMITS = {"text": 10 * MB, "image": 50 * MB, "files": 600 * MB, "data": 50 * MB, "set": 50 * MB}
@@ -22,6 +28,7 @@ URI_LIST = "text/uri-list"
 GNOME_FILES = "x-special/gnome-copied-files"
 BROWSER_HINTS = ("text/x-moz-url", "text/html")    # a copied link also offers text/uri-list
 SECRET_HINT = "x-kde-passwordManagerHint"
+KEEP = 5
 
 
 class FrameError(Exception):
@@ -107,3 +114,119 @@ class Echo:
                 return False
             self._key = key
             return True
+
+
+def file_paths(data):
+    """Local paths in a text/uri-list (or gnome-copied-files) body; None unless every entry is a local file."""
+    paths = []
+    for line in data.decode("utf-8", "replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line in ("copy", "cut"):
+            continue
+        u = urlparse(line)
+        if u.scheme != "file" or u.netloc not in ("", "localhost"):
+            return None
+        p = Path(unquote(u.path))
+        if not p.exists():
+            return None
+        paths.append(p)
+    return paths or None
+
+
+def total_size(paths):
+    total = 0
+    for p in paths:
+        if p.is_dir() and not p.is_symlink():
+            for root, _dirs, files in os.walk(p):
+                total += sum(os.lstat(os.path.join(root, f)).st_size for f in files)
+        else:
+            total += p.lstat().st_size
+    return total
+
+
+def pack(paths):
+    total = total_size(paths)
+    if total > FILES_LIMIT:
+        raise TooBig(total)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for p in paths:
+            tar.add(str(p), arcname=p.name)
+    return buf.getvalue()
+
+
+def prune(root, keep=KEEP):
+    folders = sorted((d for d in root.iterdir() if d.name.isdigit()), key=lambda d: int(d.name))
+    for d in folders[:-keep]:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def unpack(body, root):
+    """Unpack a files frame into a new numbered folder under `root`; return its top-level paths.
+    Every member is checked first, so an unsafe archive writes nothing."""
+    root.mkdir(parents=True, exist_ok=True)
+    dest = root / str(max((int(d.name) for d in root.iterdir() if d.name.isdigit()), default=0) + 1)
+    with tarfile.open(fileobj=io.BytesIO(body), mode="r:") as tar:
+        members = tar.getmembers()
+        for m in members:
+            # the data filter would quietly strip a leading "/": refuse such archives outright
+            if m.name.startswith("/") or ".." in Path(m.name).parts:
+                raise tarfile.TarError(f"unsafe name in the received files: {m.name!r}")
+            tarfile.data_filter(m, str(dest))          # links outside, devices, … raise FilterError
+        dest.mkdir()
+        tar.extractall(dest, members=members, filter="data")
+    prune(root)
+    tops = []
+    for m in members:
+        top = Path(m.name).parts[0]
+        if top not in tops:
+            tops.append(top)
+    return [dest / t for t in tops]
+
+
+def uri_list(paths):
+    return "".join(p.resolve().as_uri() + "\r\n" for p in paths).encode()
+
+
+def pick(mimes, get):
+    """(kind, content, paths) for a clipboard offering `mimes`, reading types with `get(mime)`.
+    None when there is nothing to send: nothing useful, a secret, or empty content."""
+    choice = choose(mimes)
+    if choice is None:
+        return None
+    kind, mime = choice
+    content, paths = get(mime), None
+    if kind == "files":
+        paths = file_paths(content)
+        if paths is None:                              # web links, not local files: send them as text
+            choice = text_choice(mimes)
+            if choice is None:
+                return None
+            kind, mime = choice
+            content = get(mime)
+    if not content:
+        return None
+    return kind, content, paths
+
+
+def build_frame(mimes, get, echo):
+    """The frame to send for a clipboard offering `mimes`, or None (nothing new).
+    Raises TooBig when the content is over its limit."""
+    picked = pick(mimes, get)
+    if picked is None:
+        return None
+    kind, content, paths = picked
+    if not echo.is_new(content):
+        return None
+    if kind == "files":
+        return encode("files", pack(paths), mime="application/x-tar")
+    if len(content) > LIMITS[kind]:
+        raise TooBig(len(content))
+    return encode(kind, content, mime=TEXT_MIME if kind == "text" else "image/png")
+
+
+def incoming(h, body, cache):
+    """What to put on the clipboard for a received content frame: (mime, content)."""
+    if h["kind"] == "files":
+        return URI_LIST, uri_list(unpack(body, cache))
+    return h["mime"], body
