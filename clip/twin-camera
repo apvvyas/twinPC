@@ -318,8 +318,9 @@ def feed(device, size, inp, run=None):
             if not pid_alive(holder):
                 break
             time.sleep(0.05)
+    # unbuffered: frames go now; the decoder's errors reach the main PC's service log over ssh
     p = subprocess.Popen(feed_argv(device, size), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, preexec_fn=die_with_parent, bufsize=0)   # unbuffered: frames go now
+                         preexec_fn=die_with_parent, bufsize=0)
     lock.write_text(str(p.pid))
 
     def pump():

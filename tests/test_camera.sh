@@ -14,7 +14,7 @@ done
 wait $reader
 peak=$(ssh twin 'sed -n "s/.*YAVG=//p" /tmp/twinpc-camera-test.txt | sort -n | tail -1; rm -f /tmp/twinpc-camera-test.txt')
 [[ $on == 1 ]] || { echo "FAIL this PC's camera never turned on"; exit 1; }
-python3 -c "import sys; sys.exit(0 if float('${peak:-0}') > 20 else 1)" || { echo "FAIL only black frames (peak Y ${peak:-none})"; exit 1; }
+python3 -c "import sys; sys.exit(0 if float('${peak:-0}') > 20 else 1)" || { echo "FAIL only black frames (peak Y ${peak:-none}) — is the room dark or the camera covered? (ffmpeg on /dev/video0 here shows what it sees)"; exit 1; }
 off=0
 for _ in $(seq 40); do
   pgrep -f "input_format mjpeg" >/dev/null || { off=1; break; }; sleep 0.5
