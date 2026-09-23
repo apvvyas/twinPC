@@ -133,10 +133,13 @@ def file_paths(data):
         line = line.strip()
         if not line or line.startswith("#") or line in ("copy", "cut"):
             continue
-        u = urlparse(line)
-        if u.scheme != "file" or u.netloc not in ("", "localhost"):
-            return None
-        p = Path(unquote(u.path))
+        if line.startswith("/"):                       # a bare path: GNOME sometimes answers this way
+            p = Path(line)
+        else:
+            u = urlparse(line)
+            if u.scheme != "file" or u.netloc not in ("", "localhost"):
+                return None
+            p = Path(unquote(u.path))
         if not p.exists():
             return None
         paths.append(p)

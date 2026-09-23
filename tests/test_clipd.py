@@ -115,6 +115,15 @@ class FilesTests(unittest.TestCase):
         self.assertIsNone(cd.file_paths((self.d / "missing").as_uri().encode()))
         self.assertIsNone(cd.file_paths(b""))
 
+    def test_file_list_with_bare_paths(self):
+        # GNOME sometimes answers a text/uri-list request for a Nautilus copy with plain paths
+        f = self.d / "10c12a5a.jpeg"
+        f.write_bytes(b"jpeg")
+        self.assertEqual(cd.file_paths(str(f).encode()), [f])
+        self.assertEqual(cd.file_paths(str(f).encode() + b"\n" + f.as_uri().encode()), [f, f])
+        self.assertIsNone(cd.file_paths(str(self.d / "missing.jpeg").encode()))
+        self.assertIsNone(cd.file_paths(b"relative/path.jpeg"))
+
     def test_pack_unpack_round_trip(self):
         src = self.d / "src"
         (src / "dir").mkdir(parents=True)
