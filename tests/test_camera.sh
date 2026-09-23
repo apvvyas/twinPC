@@ -5,8 +5,7 @@ set -u
 ssh twin '[ -e /dev/video9 ]' || { echo "FAIL the twin has no /dev/video9"; exit 1; }
 
 # read the twin's webcam for 6 s; the brightest frame's average luma must be above black (16)
-ssh twin 'ffmpeg -hide_banner -loglevel error -f v4l2 -i /dev/video9 -t 6
-  -vf signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=/tmp/twinpc-camera-test.txt -f null -' &
+ssh twin 'ffmpeg -hide_banner -loglevel error -f v4l2 -i /dev/video9 -t 6 -vf signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=/tmp/twinpc-camera-test.txt -f null -' &
 reader=$!
 on=0
 for _ in $(seq 30); do
