@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# twin-exec — run a command line on the twin PC inside a tmux session: live in this terminal
+# (Ctrl-C works, the exit code comes back) and visible in a window on twin's workspace 9.
+# Used by the twin-route bash hook.   twin-exec [--name NAME] -- <command line>
+set -uo pipefail
+HOST=${TWIN_HOST:-twin}
+HERE=$(dirname "$(readlink -f "$0")")
+TWIN=$(command -v twin || echo "$HERE/../twin")
+REMOTE_ENV='export HSA_OVERRIDE_GFX_VERSION=10.3.0 PATH=$HOME/ai-env/bin:$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH'
+
+name=""
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --name) name=$2; shift 2 ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+line="$*"
+[[ -n ${line//[[:space:]]/} ]] || { echo "usage: twin-exec [--name NAME] -- <command line>" >&2; exit 2; }
+
+q() { printf '%q' "$1"; }
+rdir=$("$HERE/twin-route" --map-cwd "$PWD")                  # "~/work/<rel>" or "~"
+first=${line%%[[:space:]]*}; first=${first##*/}; first=${first//[^A-Za-z0-9_-]/}
+session=${name:-task-$(date +%m%d-%H%M%S)-${first:-cmd}}
+dir_expr='$HOME'; [[ $rdir != "~" ]] && dir_expr="\$HOME/$(q "${rdir#\~/}")"
+
+envs=""
+for v in TERM LANG COLORTERM ${TWIN_ROUTE_ENV_ALLOW:-}; do
+  [[ -n ${!v:-} ]] && envs+="export $v=$(q "${!v}"); "
+done
+
+# runs inside the tmux pane on twin: log the pane, run the line as typed, record the exit code.
+# The newline after $line keeps a trailing "# comment" or "&" from swallowing the bookkeeping.
+# The EXIT trap records the result however the line ends (including a typed "exit N").
+inner="$REMOTE_ENV; $envs mkdir -p \$HOME/jobs; tmux pipe-pane -o $(q "cat >> \$HOME/jobs/$session.log")
+trap 'rc=\$?; sleep 0.2; echo \"[exit \$rc]\" >> \$HOME/jobs/$session.log; echo \$rc > \$HOME/jobs/$session.exit' EXIT
+trap 'exit 130' INT            # Ctrl-C: abort the whole line like an interactive shell, exit 130
+cd $dir_expr || exit 1
+$line
+"
+
+start=$(date +%s)
+[[ ${TWIN_EXEC_VIEWER:-1} == 0 ]] ||                              # 0 = no window on twin (tests)
+  setsid "$TWIN" viewer "$session" </dev/null >/dev/null 2>&1 &   # fully detached: must not hold this terminal open
+# Omarchy's tmux sets detach-on-destroy off (clients jump to another session when theirs ends);
+# task sessions turn it on so this terminal and the twin viewer detach when the task finishes.
+if [[ -t 0 && -t 1 ]]; then
+  # this terminal creates (and is attached to) the session, so even instant output is seen
+  ssh -q -t "$HOST" "tmux new-session -s $(q "$session") bash -c $(q "$inner") \\; set-option -t $(q "$session") detach-on-destroy on"
+  ssh_rc=$?
+else
+  ssh "$HOST" "tmux new-session -d -s $(q "$session") bash -c $(q "$inner") \\; set-option -t $(q "$session") detach-on-destroy on
+    log=\$HOME/jobs/$session.log; ex=\$HOME/jobs/$session.exit
+    for _ in \$(seq 50); do [ -f \$log ] && break; sleep 0.1; done
+    tail -n +1 -f \$log & t=\$!
+    while [ ! -f \$ex ]; do sleep 0.3; done; sleep 0.3; kill \$t"
+  ssh_rc=$?
+fi
+
+if [[ $ssh_rc -eq 255 ]]; then
+  echo "twin connection lost — task keeps running on twin (twin attach $session)" >&2
+  exit 255
+fi
+rc=$(ssh "$HOST" "cat \$HOME/jobs/$session.exit 2>/dev/null" </dev/null)
+if [[ -z $rc ]]; then
+  echo "detached — '$session' keeps running on twin (twin attach $session · twin logs $session)"
+  exit 0
+fi
+elapsed=$(( $(date +%s) - start ))
+if (( elapsed > 60 )) && command -v notify-send >/dev/null; then
+  notify-send "twin: $first finished (exit $rc)" "after ${elapsed}s — $line"
+fi
+exit "$rc"
