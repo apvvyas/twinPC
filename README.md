@@ -1,70 +1,166 @@
-# twinPC
+<div align="center">
 
-**Use a second Linux PC as a GPU/AI co-processor for your main PC — over a single ethernet cable.**
+# 🖥️⚡🖥️ twinPC
 
-twinPC connects a main workstation to a second machine (the *twin*) and makes the twin feel like
-part of the main PC: GPU and AI work typed in your terminal runs on the twin automatically, the
-twin wakes and shuts down with your PC, its encrypted disk is unlocked from your PC, and its
-screen, mouse, keyboard and sound are shared.
+### Your second PC becomes your main PC's GPU.
 
-## Features
+**Type `ollama run …` on one machine — it runs on the other machine's GPU.**<br>
+One ethernet cable. No cloud, no cluster, no new habits.
 
-- **`twin` command** — run background jobs, Claude Code agents and GPU work on the twin; watch GPU
-  and processes; copy files; manage it all from the main PC (`man twin`, `twin help`).
-- **Automatic task routing** — when you press Enter, a bash hook decides where the command should
-  run. GPU/AI commands (`ollama`, `*train*.py`, `whisper`, `torchrun`, …) and anything inside the
-  shared workspace run on the twin; CPU-heavy commands move there only when the main PC is busy.
-  Output, Ctrl-C and exit codes behave as if the command ran locally, and each task also opens a
-  window on the twin's desktop.
-- **Power** — the twin wakes with the main PC (Wake-on-LAN), its LUKS-encrypted disk is unlocked
-  over SSH from the main PC, and it shuts down with the main PC unless jobs are still running.
-- **Desktop sharing** — move the mouse off the edge of your screen onto the twin's monitor
-  (lan-mouse); with no monitor attached, view the twin's desktop fullscreen with **Super+F12**
-  (wayvnc over SSH); drive it by command with `twin gui …`.
-- **Sound** — the twin plays through the main PC's speakers (PipeWire over SSH).
-- **Remote services** — `ollama` on the main PC uses the twin's GPU; `docker --context twin` runs
-  containers there; the twin's `~/work` is mounted on the main PC at `~/twin`.
+![Linux](https://img.shields.io/badge/Linux-GNOME%20%7C%20Hyprland-FCC624?logo=linux&logoColor=black)
+![Bash](https://img.shields.io/badge/Bash-5.x-4EAA25?logo=gnubash&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![AMD ROCm](https://img.shields.io/badge/AMD-ROCm-ED1C24?logo=amd&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-54%20passing-brightgreen)
 
-## How it works
+[Features](#-features) · [How it works](#-how-it-works) · [Quick start](#-quick-start) · [Commands](#-command-cheat-sheet) · [Configuration](#%EF%B8%8F-configuration) · [Troubleshooting](#-troubleshooting)
 
+</div>
+
+---
+
+## 💡 Why
+
+You have a powerful workstation — and an older PC with a decent GPU gathering dust. Normally
+using both means SSH sessions, copying files around and remembering which machine does what.
+
+**twinPC makes the second machine feel like part of the first.** Keep working in your usual
+terminal: GPU and AI work quietly runs on the *twin*, the output streams back to you, and the twin
+powers on, unlocks, shares its screen, mouse and sound, and shuts down — all from your main PC.
+
+## ✨ Features
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### 🧠 Automatic task routing
+Press Enter as usual. `ollama`, `*train*.py`, `whisper`, `torchrun`… run on the twin's GPU
+automatically. Live output, **Ctrl-C and exit codes work as if it were local**, and your shell
+history stays clean.
+
+</td>
+<td width="50%" valign="top">
+
+### ⚡ One-command power
+The twin **wakes with your PC** (Wake-on-LAN), its **encrypted disk is unlocked from your
+PC**, and it shuts down with you — unless a job is still running.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🖱️ One desk, two computers
+Push the mouse off your screen's edge onto the twin's monitor. No monitor on the twin?
+**Super+F12** shows its desktop fullscreen.
+
+</td>
+<td valign="top">
+
+### 🔊 Shared sound
+The twin plays through **your main PC's speakers** — Bluetooth included — and reconnects by
+itself after a reboot or disconnect.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🛠️ The `twin` command
+Background jobs, Claude Code agents, GPU stats, file sync, GUI control — one command
+with a full manual (`man twin`).
+
+</td>
+<td valign="top">
+
+### 🔒 Private by design
+Everything runs **over a direct cable**, and jobs, audio and the remote desktop travel
+**inside SSH** — no cloud service, no open remote-desktop or audio ports.
+
+</td>
+</tr>
+</table>
+
+## 🎬 What it looks like
+
+```console
+$ ollama run gemma3:4b "Explain LoRA in one sentence"
+→ twin (always:ollama)
+LoRA (Low-Rank Adaptation) is a technique that allows you to fine-tune large language models by
+only training a small number of additional parameters, significantly reducing computational costs…
+
+$ twin gpu
+GPU busy: 98%   VRAM: 4308 / 8176 MiB
+Temp: 58°C
+ollama: gemma3:4b    a2af6cc3eb7f    2.9 GB    100% GPU     4096       29 minutes from now
+
+$ twin route explain make      # CPU work stays on your (faster, idle) main PC
+local load-ok:make cpu=0% ram=19%
 ```
- main PC                                                   twin
- ───────                                                   ────
- terminal ──Enter──► twin-route.bash ─► twin-route (rules) │
-                           │ "twin"                        │
-                           ▼                               │
-                       twin-exec ──── ssh ────────────────►│ tmux task session ─► window on workspace 9
- twin CLI ─────────────────────────── ssh ────────────────►│ jobs, GPU, GUI (hyprctl / wtype / ydotool)
- twin-link.service ── Wake-on-LAN, disk unlock ───────────►│ initramfs SSH (dropbear)
- twin-kvm.timer ─ lan-mouse on/off, audio re-link          │ lan-mouse
- twin-audio.service ─ PipeWire socket over ssh -R ◄────────│ "Main PC speakers" output
- twin-mount.service ─ sshfs ~/twin ◄───────────────────────│ ~/work
- ollama / docker ─────────────────────────────────────────►│ ollama (ROCm), dockerd
+
+## 🧭 How it works
+
+```mermaid
+flowchart LR
+    subgraph MAIN["🖥️ Main PC"]
+        T["Terminal<br/>(you press Enter)"] --> H["twin-route.bash<br/>hook"]
+        H --> R{"twin-route<br/>rules + load"}
+        R -- "local" --> L["runs here"]
+        R -- "twin" --> X["twin-exec"]
+        S["systemd user services<br/>wake · unlock · audio · mount"]
+    end
+    subgraph TWIN["⚡ Twin PC (GPU)"]
+        TM["tmux task session"] --> W["window on workspace 9"]
+        G["Ollama · PyTorch · Docker<br/>on the AMD GPU"]
+    end
+    X == "SSH over the cable" ==> TM
+    TM -. "live output, exit code" .-> T
+    S == "Wake-on-LAN · disk unlock · PipeWire · sshfs" ==> TWIN
 ```
 
-Everything travels over SSH on the direct cable; the only extra listening ports on the twin are
-Ollama (11434) and lan-mouse (UDP 4242), both opened on the twin's firewall.
+**The routing rules, in plain words:**
 
-## Requirements
+| The command… | Runs on |
+|---|---|
+| uses the GPU or AI tools (`ollama`, `whisper`, `*train*.py`, `torchrun`, `claude -p`, …) | 🟢 **twin** |
+| is typed inside `~/twin/…` (the twin's `~/work`, mounted on your PC) | 🟢 **twin** |
+| is CPU-heavy (`make`, `pytest`, `ffmpeg`, …) **and** your PC is above 80 % CPU / 85 % RAM | 🟢 **twin** |
+| is anything else — `git`, editors, `sudo`, aliases, functions, … | 🔵 **your PC** |
 
-| | Main PC | Twin |
-|---|---|---|
-| OS | Linux with GNOME (Wayland), bash, systemd, NetworkManager, PipeWire | Arch-based [Omarchy](https://omarchy.org) (Hyprland, PipeWire) |
-| Hardware | a free ethernet port | an AMD GPU supported by ROCm, a NIC with Wake-on-LAN |
-| Software | `ssh`, `python3` (3.11+), `rsync`, `sshfs`, `remmina`, `curl` | installed by `twinpc/install.sh` |
+Twin off? You're asked: **[h]ere / [w]ake twin / [c]ancel**.
 
-The two machines are connected directly by an ethernet cable, and the main PC shares its internet
-connection over it (NetworkManager "Shared to other computers"). The defaults assume that
-NetworkManager subnet: main PC `10.42.0.1`, twin `10.42.0.11`.
+## 🚀 Quick start
 
-## Installation
+> **You need:** a main PC running Linux + GNOME, a second PC running [Omarchy](https://omarchy.org)
+> (Arch + Hyprland) with an AMD GPU, and one ethernet cable between them.
 
-Replace the `<placeholders>` with your own values.
+```bash
+# 1 · connect: main PC wired connection → IPv4 → "Shared to other computers"; then on the twin:
+sudo pacman -S --needed openssh && sudo systemctl enable --now sshd && sudo ufw allow 22/tcp
+
+# 2 · on the main PC
+git clone https://github.com/<you>/twinPC ~/projects/twinPC && cd ~/projects/twinPC
+ssh-copy-id <twin-user>@10.42.0.11
+
+# 3 · set up the twin (asks for the twin's sudo password), then reboot it
+scp -r twinpc <twin-user>@10.42.0.11:twinpc-setup
+ssh -t <twin-user>@10.42.0.11 'sudo bash ~/twinpc-setup/install.sh && sudo reboot'
+
+# 4 · set up the main PC
+mkdir -p ~/.config/twinpc && printf 'TWIN_USER=<twin-user>\nTWIN_MAC=<twin-mac>\n' > ~/.config/twinpc/config
+bash main/install.sh
+```
+
+Open a new terminal and try `twin status` → `ollama run gemma3:4b hi` 🎉
+
+<details>
+<summary><b>📋 Step-by-step installation (with explanations)</b></summary>
 
 ### 1. Connect the machines
-
 1. Plug the ethernet cable into both PCs.
-2. On the main PC, open the wired connection's settings → IPv4 → **Shared to other computers**.
+2. On the main PC: wired connection settings → IPv4 → **Shared to other computers**. The twin
+   gets an address in `10.42.0.x` and internet through your PC.
 3. On the twin, enable SSH:
    ```bash
    sudo pacman -S --needed openssh
@@ -77,13 +173,11 @@ Replace the `<placeholders>` with your own values.
    ssh-copy-id <twin-user>@<twin-ip>
    ```
 
-### 2. Twin BIOS
-
-Enable Wake-on-LAN in the twin's firmware. On ASUS boards: **Advanced → APM Configuration** →
-*ErP Ready* = Disabled, *Power On By PCI-E* = Enabled (optionally *Restore AC Power Loss* = Power On).
+### 2. Enable Wake-on-LAN in the twin's BIOS
+On ASUS boards: **Advanced → APM Configuration** → *ErP Ready* = Disabled,
+*Power On By PCI-E* = Enabled. Optional: *Restore AC Power Loss* = Power On.
 
 ### 3. Set up the twin
-
 ```bash
 scp -r twinpc <twin-user>@<twin-ip>:twinpc-setup
 ssh <twin-user>@<twin-ip>
@@ -91,100 +185,123 @@ sudo bash ~/twinpc-setup/install.sh        # packages, Ollama (ROCm), Wake-on-LA
 bash ~/twinpc-setup/setup-ai-env.sh        # optional: PyTorch for ROCm in ~/ai-env (~4 GB)
 sudo reboot
 ```
-
-`install.sh` runs each step in `twinpc/` in order; every step can be re-run safely.
+Each step in `twinpc/` is a separate script and can be re-run safely.
 
 ### 4. Set up the main PC
-
 ```bash
 sudo apt install sshfs remmina             # or your distribution's equivalent
 mkdir -p ~/.config/twinpc
 cat > ~/.config/twinpc/config <<'EOF'
-TWIN_USER=<twin-user>                      # your user on the twin (used for the ssh alias)
+TWIN_USER=<twin-user>                      # your user on the twin
 TWIN_MAC=<twin-mac-address>                # twin's wired MAC, for Wake-on-LAN (ip link on the twin)
 EOF
 bash ~/projects/twinPC/main/install.sh
 ```
-
-The installer needs no `sudo`, only writes files whose content differs, and can be re-run at any
-time. It installs the `twin` command and manual, the SSH aliases, the user services, the GNOME
+The installer needs no `sudo`, only writes files whose content differs and can be re-run any
+time. It sets up the `twin` command and manual, SSH aliases, user services, the Super+F12
 shortcut, lan-mouse on both machines, the twin's audio output and the task-routing hook. If your
-wired card is an Intel I225-V it prints one optional `sudo` command for a udev rule that stops
-that card from hanging.
+wired card is an Intel I225-V, it also prints an optional `sudo` command that stops that card
+from hanging.
 
-### 5. Try it
+</details>
 
-Open a new terminal:
+## 📖 Command cheat sheet
 
-```bash
-twin status                     # up / waiting for disk password / off
-twin gpu                        # the twin's GPU load and VRAM
-ollama run gemma3:4b "hello"    # → runs on the twin's GPU automatically
-twin route explain make         # why a command would run here or there
-```
+| Command | What it does |
+|---|---|
+| `twin status` · `twin wake` · `twin off` · `twin reboot` | power — wake/reboot ask for the disk password |
+| `twin run <name> '<cmd>'` · `twin logs <name> -f` | background job on the twin and its output |
+| `twin claude <name> <dir>` · `twin cc <name> <dir> "<task>"` | Claude Code on the twin, interactive or headless |
+| `twin gpu` · `twin top` · `twin models` | what the twin is doing |
+| `twin route status` · `twin route explain <cmd>` · `twin route off` | automatic routing |
+| `local <cmd>` · `twin-exec -- <cmd>` | force one command here / on the twin |
+| `twin desktop` (**Super+F12**) · `twin gui shot` | see the twin's screen |
+| `twin push <dir>` · `twin pull <path>` | copy files |
+| `twin audio test` | play a tone on the twin through your speakers |
 
-## Usage
+Full reference: **`man twin`**.
 
-```bash
-twin wake | twin off | twin reboot          # power (wake/reboot ask for the disk password)
-twin run train 'python train.py'            # background job on the twin …
-twin logs train -f                          # … and its output
-twin claude agent1 ~/work/project           # Claude Code session on the twin
-twin route on | off | status                # automatic task routing
-local <command>                             # force one command to run on this PC
-twin desktop                                # the twin's screen fullscreen (also Super+F12)
-twin audio status | test                    # the twin's sound through this PC
-```
+## ⚙️ Configuration
 
-`man twin` documents every command.
-
-## Configuration
-
-Machine-specific settings go in `~/.config/twinpc/config` (plain `NAME=value` lines, read by the
-`twin` command and its services); routing rules go in `~/.config/twin-route/rules.toml`.
+Machine settings live in **`~/.config/twinpc/config`** (plain `NAME=value` lines); routing rules
+live in **`~/.config/twin-route/rules.toml`**.
 
 | Setting | Where | Default |
 |---|---|---|
-| Which commands run on the twin | `~/.config/twin-route/rules.toml` (`always_twin`, `never_twin`, `load_offload`, `needs_cwd`) | GPU/AI tools on the twin |
-| Load thresholds | `rules.toml` `[load]` | CPU 80 %, RAM 85 % |
-| Shared workspace | `rules.toml` `[workspace]` | `~/twin` ⇄ twin `~/work` |
-| Your user on the twin | `TWIN_USER` (config file) | — set it |
-| SSH host alias | `TWIN_HOST` (config file) | `twin` |
-| Twin's MAC (Wake-on-LAN) | `TWIN_MAC` (config file) | — set it |
-| Broadcast address / this PC's wired port | `TWIN_BCAST`, `TWIN_IFACE` (config file) | `10.42.0.255`, auto-detected |
-| The twin's wired port (for its setup scripts) | `TWIN_WIRED_IF` (environment, on the twin) | auto-detected |
-| Headless virtual screen size | `TWIN_HEADLESS_MODE` (config file) | `2560x1080@60` |
-| Local port for the remote desktop | `TWIN_VNC_PORT` (config file) | `5901` |
-| Extra environment passed to routed tasks | `TWIN_ROUTE_ENV_ALLOW` | `TERM LANG COLORTERM` only |
-| Turn routing off in one shell | `TWIN_ROUTE=off` | on |
+| Your user on the twin | `TWIN_USER` | — *set it* |
+| Twin's MAC (Wake-on-LAN) | `TWIN_MAC` | — *set it* |
+| SSH host alias | `TWIN_HOST` | `twin` |
+| This PC's wired port | `TWIN_IFACE` | auto-detected |
+| Headless screen size | `TWIN_HEADLESS_MODE` | `2560x1080@60` |
+| Remote-desktop local port | `TWIN_VNC_PORT` | `5901` |
+| Commands that go to the twin | `rules.toml` → `always_twin`, `never_twin`, `load_offload`, `needs_cwd` | GPU/AI tools |
+| Load thresholds | `rules.toml` → `[load]` | CPU 80 %, RAM 85 % |
+| Shared workspace | `rules.toml` → `[workspace]` | `~/twin` ⇄ twin `~/work` |
+| Routing off for one shell | `TWIN_ROUTE=off` | on |
 
-## Troubleshooting
+## 🩺 Troubleshooting
 
-- **Nothing reaches the twin** — check the main PC's wired port too: if its `tx_packets`
-  (`/sys/class/net/<iface>/statistics/tx_packets`) stops increasing while you ping the twin, the
-  main PC's NIC is stuck; reload its driver or reboot.
-- **No sound from the twin** — `twin audio heal`, then `twin audio test`.
-- **The twin waits at its disk-encryption prompt** — `twin unlock` in a terminal.
-- **The twin's screen is locked** — `twin unlock-screen`.
-- **`~/twin` is empty** — the twin is off or the mount dropped: `twin wake` or
-  `systemctl --user restart twin-mount`.
-- **Routing gets in the way** — `local <command>` for one command, `twin route off` for all.
+<details>
+<summary><b>Nothing reaches the twin</b></summary>
 
-## Project layout
+Check the main PC's wired port too. If `/sys/class/net/<iface>/statistics/tx_packets` stops
+increasing while you `ping` the twin, the main PC's network card is stuck — reload its driver
+(`sudo modprobe -r igc && sudo modprobe igc` for Intel I225) or reboot.
+</details>
+
+<details>
+<summary><b>No sound from the twin</b></summary>
+
+`twin audio heal`, then `twin audio test`. The upkeep timer runs `heal` every 20 s anyway.
+</details>
+
+<details>
+<summary><b>The twin waits at its disk-encryption prompt</b></summary>
+
+Run `twin unlock` in a terminal and type the disk password.
+</details>
+
+<details>
+<summary><b>The twin's screen is locked</b></summary>
+
+`twin unlock-screen` types your login password into the lock screen.
+</details>
+
+<details>
+<summary><b><code>~/twin</code> is empty</b></summary>
+
+The twin is off or the mount dropped: `twin wake`, or `systemctl --user restart twin-mount`.
+</details>
+
+<details>
+<summary><b>Routing gets in the way</b></summary>
+
+`local <command>` for one command, `twin route off` for all of them.
+</details>
+
+## 🗂️ Project layout
 
 ```
-twin, twin-completion.bash, man/   the twin command, tab completion and manual
-route/                             automatic task routing: router, rules, runner, bash hook
-main/                              main-PC services and settings, main/install.sh
-twinpc/                            twin setup scripts, twinpc/install.sh, setup-ai-env.sh
-tests/                             unit and integration tests
-docs/                              design notes
+twin · twin-completion.bash · man/   the twin command, tab completion and manual
+route/                               automatic task routing — router, rules, runner, bash hook
+main/                                main-PC services and settings · main/install.sh
+twinpc/                              twin setup scripts · twinpc/install.sh · setup-ai-env.sh
+tests/                               54 unit & integration tests + system checks
+docs/                                design notes
 ```
 
-## Tests
+## 🧪 Tests
 
 ```bash
-python3 -m unittest tests.test_twin_route tests.test_hook   # local, fast
+python3 -m unittest tests.test_twin_route tests.test_hook   # fast, local
 python3 -m unittest tests.test_twin_exec                    # needs the twin running
 for t in tests/*.sh; do bash "$t"; done                     # system checks
 ```
+
+---
+
+<div align="center">
+
+**If twinPC saves you from buying a new GPU, give it a ⭐**
+
+</div>
