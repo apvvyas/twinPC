@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# twin-task-view SESSION — runs in a terminal on twin's workspace 9: live view of a task sent from
+# the main PC (or a `twin run` job), then its result. Closes 30 s after success; stays open on failure.
+s=${1:?session}; log=$HOME/jobs/$s.log; ex=$HOME/jobs/$s.exit
+printf '\e]2;%s\a' "$s"
+for _ in $(seq 20); do tmux has-session -t "$s" 2>/dev/null && break; [[ -f $ex ]] && break; sleep 0.25; done
+if tmux has-session -t "$s" 2>/dev/null; then
+  tmux attach -t "$s"
+elif [[ -f $log ]]; then
+  cat "$log"                                     # finished before the window opened
+fi
+for _ in $(seq 10); do [[ -f $ex ]] && break; sleep 0.3; done
+rc=$(cat "$ex" 2>/dev/null || sed -n 's/^\[exit \([0-9]*\)\]$/\1/p' "$log" 2>/dev/null | tail -1)
+if [[ $rc == 0 ]]; then
+  echo "[exit 0] — closing in 30 s (any key closes now)"; read -rsn1 -t 30
+else
+  echo "[exit ${rc:-?}] — press any key to close"; read -rsn1
+fi

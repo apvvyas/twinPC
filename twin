@@ -20,6 +20,7 @@ twin — run and manage jobs on the twin PC   (full manual: man twin)
   twin attach <name>           attach to a job's terminal (detach: Ctrl-b d)
   twin send <name> <text...>   type text + Enter into a job (e.g. answer a prompt, talk to claude)
   twin kill <name>             stop a job
+  twin viewer <name>           open a window for a job on twin's workspace 9 (automatic for run/cc/bizdev)
   twin claude <name> [dir]     start a Claude Code session in tmux (then: twin attach <name>)
   twin cc <name> <dir> <prompt> run a headless Claude Code task as a logged job
   twin bizdev [task...]        business-development agent on twin (no task: interactive session)
@@ -93,6 +94,7 @@ case "$cmd" in
     name=$1; shift
     inner="$REMOTE_ENV; cd \$HOME; ( $* ) 2>&1 | tee -a \$HOME/jobs/$name.log; echo \"[exit \${PIPESTATUS[0]}]\" | tee -a \$HOME/jobs/$name.log; exec bash"
     ssh "$HOST" "$REMOTE_ENV; tmux new-session -d -s $(q "$name") $(q bash -lc "$inner")"
+    "$0" viewer "$name" >/dev/null 2>&1 &
     echo "started '$name' on $HOST  →  twin logs $name -f"
     ;;
   ls)      ssh "$HOST" 'tmux ls 2>/dev/null || echo "(no jobs)"' ;;
@@ -150,6 +152,11 @@ case "$cmd" in
         echo "played a 1.5 s tone on twin's default output" ;;
       *) echo "usage: twin audio on|off|status|test"; exit 1 ;;
     esac
+    ;;
+  viewer)
+    # terminal on twin's workspace 9 attached to a task session — no focus change on twin
+    s=${1:?session}
+    gsh "hyprctl dispatch $(q "hl.dsp.exec_cmd(\"[workspace 9 silent] foot --app-id=twin-task --title=$s -e \$HOME/.local/bin/twin-task-view $s\")")" >/dev/null 2>&1 || true
     ;;
   gpu)
     ssh "$HOST" 'd=$(dirname $(readlink -f /sys/class/drm/card*/device/gpu_busy_percent | head -1));
