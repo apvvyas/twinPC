@@ -7,14 +7,14 @@ from . import adapters, profile as P
 from .adapters.base import Unsupported
 from .doctor import doctor
 from .features import FEATURES, build_plan
-from .steps import Ctx, Runner, run_steps
+from .steps import Ctx, Runner, StepError, run_steps
 
 REPO = Path(__file__).resolve().parents[2]
 PROBE = REPO / "tool" / "probe.sh"
 
 
 def default_probe(machine, host, script):
-    argv = ["sh", "-s"] if machine == "main" else ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, "sh -s"]
+    argv = ["sh", "-s"] if machine == "main" else ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", host, "sh -s"]
     p = subprocess.run(argv, input=script, capture_output=True, text=True)
     return p.stdout if p.returncode == 0 else None
 
@@ -42,14 +42,23 @@ def _unsupported(prof):
     return seen
 
 
+def _is_address(target):
+    """user@host or a bare IPv4 address: probe it once, but keep the ssh alias in the profile."""
+    return "@" in target or (target.count(".") == 3 and all(p.isdigit() for p in target.split(".")))
+
+
 def cmd_detect(a, probe, out):
     existing = P.load() if P.profile_path().exists() else None
-    host = a.twin or (existing or {}).get("network", {}).get("twin_host") or "twin"
+    alias = (existing or {}).get("network", {}).get("twin_host") or "twin"
+    host = a.twin or alias
+    if a.twin and not _is_address(a.twin):
+        alias = a.twin                     # an explicit alias is what the user wants from now on
     script = PROBE.read_text()
     main_raw = probe("main", host, script)
     twin_raw = probe("twin", host, script)
     prof = P.build(P.parse_probe(main_raw or ""), P.parse_probe(twin_raw) if twin_raw else None,
-                   existing, a.force, host)
+                   existing, a.force, alias)
+    prof["network"]["twin_host"] = alias
     path = P.save(prof)
     out(f"profile written: {path}")
     out(_describe("main", prof["main"]))
@@ -68,7 +77,7 @@ def main(argv=None, runner=None, probe=None, out=print, confirm=None):
     ap = argparse.ArgumentParser(prog="twinpc", description="Set up and check twinPC on a pair of Linux machines.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("detect", help="probe both machines and write ~/.config/twinpc/profile.toml")
-    d.add_argument("--twin", help="ssh host of the twin (default: twin)")
+    d.add_argument("--twin", help="ssh alias of the twin (default: twin), or user@address to probe it before the alias exists")
     d.add_argument("--force", action="store_true", help="refresh detected values instead of only filling gaps")
     i = sub.add_parser("install", help="install every feature (or the ones named), skipping what is done")
     i.add_argument("features", nargs="*", metavar="FEATURE", help=", ".join(FEATURES))
@@ -80,12 +89,12 @@ def main(argv=None, runner=None, probe=None, out=print, confirm=None):
     c.add_argument("--no-root", action="store_true", help="skip checks that need sudo")
     a = ap.parse_args(argv)
 
-    if a.cmd == "detect":
-        return cmd_detect(a, probe or default_probe, out)
     try:
+        if a.cmd == "detect":
+            return cmd_detect(a, probe or default_probe, out)
         prof = P.load()
         steps = build_plan(prof, REPO, a.features or None)
-    except (P.ProfileError, ValueError) as e:
+    except (P.ProfileError, StepError, ValueError) as e:
         out(str(e))
         return 2
     host = prof.get("network", {}).get("twin_host") or "twin"

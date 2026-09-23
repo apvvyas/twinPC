@@ -144,7 +144,7 @@ git clone https://github.com/<you>/twinPC ~/projects/twinPC && cd ~/projects/twi
 ssh-copy-id <twin-user>@10.42.0.11
 
 # 3 · on the main PC: detect both machines, see the plan, install, check
-tool/twinpc detect
+tool/twinpc detect --twin <twin-user>@10.42.0.11   # first time; later just: tool/twinpc detect
 tool/twinpc install --dry-run
 tool/twinpc install          # asks for sudo on each machine once; the BIOS step asks you to confirm
 tool/twinpc doctor
@@ -178,7 +178,7 @@ On ASUS boards: **Advanced → APM Configuration** → *ErP Ready* = Disabled,
 ### 3. Install from the main PC
 ```bash
 cd ~/projects/twinPC
-tool/twinpc detect            # probes both machines → ~/.config/twinpc/profile.toml (edit it if a value is wrong)
+tool/twinpc detect --twin <twin-user>@<twin-ip>   # probes both machines → ~/.config/twinpc/profile.toml (edit it if a value is wrong)
 tool/twinpc install --dry-run # what would change
 tool/twinpc install           # everything, or name features: tool/twinpc install gpu-stack kvm
 tool/twinpc doctor            # ✅ / ⚠️ / ❌ per feature

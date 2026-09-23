@@ -2,7 +2,7 @@
 import re
 from pathlib import Path
 
-from ..steps import cmd_step, unit_step
+from ..steps import cmd_step, ufw_step, unit_step
 from .packages import pkg_step
 
 
@@ -38,9 +38,8 @@ class Amd:
             cmd_step("gpu-stack.twin.groups", "gpu-stack", "twin", f"add {v['user']} to docker, render and video",
                      check=f"[ \"$(id -nG {v['user']} | tr ' ' '\\n' | grep -cxE 'docker|render|video')\" = 3 ]",
                      apply=f"usermod -aG docker,render,video {v['user']}", root=True, check_root=False),
-            cmd_step("gpu-stack.twin.firewall", "gpu-stack", "twin", "allow Ollama (11434/tcp) in the twin's firewall",
-                     check="! command -v ufw >/dev/null || ufw status | grep -q '^11434/tcp'",
-                     apply="ufw allow 11434/tcp", root=True),
+            ufw_step("gpu-stack.twin.firewall", "gpu-stack", "twin", "11434/tcp",
+                     "allow Ollama (11434/tcp) in the twin's firewall"),
             cmd_step("gpu-stack.twin.pytorch", "gpu-stack", "twin", "install PyTorch for ROCm in ~/ai-env (~4 GB)",
                      check='~/ai-env/bin/python -c "import torch" 2>/dev/null',
                      apply="bash -s", input=(Path(repo) / "twinpc" / "setup-ai-env.sh").read_text()),

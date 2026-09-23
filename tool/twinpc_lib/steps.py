@@ -42,30 +42,55 @@ class Runner:
     def _argv(self, machine, cmd):
         if machine == "main":
             return ["bash", "-c", cmd]
-        return ["ssh", "-o", "BatchMode=yes", self.twin_host, cmd]
+        return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", self.twin_host, cmd]
 
     def _exec(self, argv, data):
         p = subprocess.run(argv, input=data, capture_output=True, text=True)
         return Result(p.returncode, (p.stdout + p.stderr).strip())
 
+    MAX_TRIES = 2          # two wrong passwords stay below pam_faillock's usual lock-out of 3
+
     def _password(self, machine):
-        if machine not in self.passwords:
-            if self._exec(self._argv(machine, "sudo -n true"), "").rc == 0:
-                self.passwords[machine] = ""          # passwordless sudo
-            elif not self.isatty():
-                raise RootNeedsTerminal(machine)
-            else:
-                self.passwords[machine] = self.ask(f"[sudo] password on the {machine}: ")
-        return self.passwords[machine]
+        """The sudo password for `machine` (None when sudo needs none), verified before first use."""
+        if machine in self.passwords:
+            return self.passwords[machine]
+        # -k: ignore cached credentials, so "no password needed" really means passwordless sudo
+        if self._exec(self._argv(machine, "sudo -k -n true"), "").rc == 0:
+            self.passwords[machine] = None
+            return None
+        if not self.isatty():
+            raise RootNeedsTerminal(machine)
+        for _ in range(self.MAX_TRIES):
+            password = self.ask(f"[sudo] password on the {machine}: ")
+            if self._exec(self._argv(machine, "sudo -k -S -p '' -v"), password + "\n").rc == 0:
+                self.passwords[machine] = password
+                return password
+            print(f"wrong sudo password on the {machine}", file=sys.stderr)
+        raise StepError(f"wrong sudo password on the {machine} — stopped after {self.MAX_TRIES} tries "
+                        "so the account does not get locked")
 
     def run(self, machine, cmd, root=False, input=None):
-        data = input or ""
-        if root:
-            data = self._password(machine) + "\n" + data
-            cmd = f"sudo -S -p '' bash -c {shlex.quote(cmd)}"
-        elif machine == "twin":
-            cmd = f"bash -c {shlex.quote(cmd)}"
-        return self._exec(self._argv(machine, cmd), data)
+        if not root:
+            if machine == "twin":
+                cmd = f"bash -c {shlex.quote(cmd)}"
+            return self._exec(self._argv(machine, cmd), input or "")
+        password = self._password(machine)
+        # The password goes to sudo on stdin; the command's own input comes from a private temp
+        # file (or /dev/null), so the two can never mix.
+        tmp = None
+        if input:
+            r = self._exec(self._argv(machine, 'umask 077; t=$(mktemp); cat > "$t" && echo "$t"'), input)
+            if r.rc != 0 or not r.out.strip():
+                raise StepError(f"could not stage input on the {machine}: {r.out[-200:]}")
+            tmp = r.out.strip().splitlines()[-1]
+        body = f"{{ {cmd}\n}} < {shlex.quote(tmp) if tmp else '/dev/null'}"
+        sudo = "sudo -k -n" if password is None else "sudo -k -S -p ''"
+        try:
+            return self._exec(self._argv(machine, f"{sudo} bash -c {shlex.quote(body)}"),
+                              "" if password is None else password + "\n")
+        finally:
+            if tmp:
+                self._exec(self._argv(machine, f"rm -f {shlex.quote(tmp)}"), "")
 
 
 def _ask_yes(question):
@@ -100,6 +125,7 @@ class Step:
     manual: str = ""
     skip_reason: str = ""
     check_root: bool = False
+    after_confirm: str = ""     # command run (as the user) once a manual step is confirmed
 
 
 def _ok(ctx, machine, cmd, root=False):
@@ -121,10 +147,18 @@ def cmd_step(id, feature, machine, describe, check, apply, root=False, check_roo
                 check_root=cr)
 
 
-def manual_step(id, feature, machine, describe, manual, check=None, check_root=False):
+def manual_step(id, feature, machine, describe, manual, check=None, check_root=False, after_confirm=""):
     return Step(id, feature, machine, False, describe,
                 (lambda ctx: _ok(ctx, machine, check, check_root)) if check else None,
-                None, manual=manual, check_root=check_root)
+                None, manual=manual, check_root=check_root, after_confirm=after_confirm)
+
+
+def ufw_step(id, feature, machine, rule, describe):
+    """Allow `rule` in ufw. Done when ufw is absent, inactive, or already has the rule."""
+    return cmd_step(id, feature, machine, describe,
+                    check=f"! command -v ufw >/dev/null || ufw status | grep -q '^Status: inactive'"
+                          f" || ufw status | grep -q '^{rule}'",
+                    apply=f"ufw allow {rule}", root=True)
 
 
 def file_step(id, feature, machine, dest, content, root=False, mode=None, after=None, describe=None):
@@ -178,18 +212,30 @@ def run_steps(steps, ctx, dry_run=False, out=print):
             out(f"?  {s.id}: needs sudo to check")
             continue
         try:
-            if s.check and s.check(ctx):
+            try:
+                done = bool(s.check and s.check(ctx))
+            except RootNeedsTerminal:
+                if not dry_run:
+                    raise
+                out(f"?  {s.id}: needs sudo to check (no terminal)")
+                continue
+            if done:
                 out(f"✓  {s.id}: already done")
                 continue
             if dry_run:
                 out(f"→  {s.id}: would {s.describe}" + (" (manual)" if s.apply is None else "")
                     + (" [sudo]" if s.root else ""))
                 continue
+            if s.root and not ctx.allow_root:
+                out(f"?  {s.id}: needs sudo — skipped (--no-root)")
+                continue
             if s.apply is None:
                 out(f"✋ {s.id}: {s.describe}\n   {s.manual}")
                 if not (ctx.yes or ctx.confirm("   done?")):
                     out(f"✗  {s.id}: not confirmed — stopping")
                     return 1
+                if s.after_confirm:
+                    _must(ctx, s.machine, s.after_confirm)
             else:
                 out(f"…  {s.id}: {s.describe}")
                 s.apply(ctx)

@@ -5,6 +5,7 @@ already exists, detected values only fill in missing keys unless force=True; [us
 overwritten. A shell-sourceable profile.env is written next to it for the `twin` command and hook.
 """
 import os
+import re
 import shlex
 import tomllib
 from pathlib import Path
@@ -18,6 +19,31 @@ SECTIONS = ("network", "main", "twin", "user")
 
 class ProfileError(Exception):
     pass
+
+
+# values that end up in shell commands, ssh arguments and unit files must match these (empty is allowed)
+_IFACE = r"[A-Za-z0-9_.:-]{1,15}"
+_IPV4 = r"(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}"
+_MAC = r"([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}"
+PATTERNS = {
+    ("network", "twin_host"): r"[A-Za-z0-9][A-Za-z0-9._@-]*",
+    ("network", "twin_addr"): _IPV4,
+    ("network", "main_iface"): _IFACE,
+    ("user", "twin_user"): r"[a-z_][a-z0-9_-]*\$?",
+    ("user", "twin_mac"): _MAC,
+    ("user", "twin_side"): r"left|right|top|bottom",
+    **{(m, "wired_iface"): _IFACE for m in ("main", "twin")},
+    **{(m, "wired_mac"): _MAC for m in ("main", "twin")},
+    **{(m, "addr"): _IPV4 for m in ("main", "twin")},
+}
+
+
+def validate(profile):
+    for (section, key), pattern in PATTERNS.items():
+        value = profile.get(section, {}).get(key, "")
+        if value != "" and not re.fullmatch(pattern, str(value)):
+            raise ProfileError(f"[{section}] {key} = {value!r} is not a valid value — fix it in the profile")
+    return profile
 
 
 def config_dir():
@@ -101,6 +127,7 @@ def to_env(profile):
 
 
 def save(profile, path=None):
+    validate(profile)
     path = Path(path or profile_path())
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(dumps(profile))
@@ -116,4 +143,4 @@ def load(path=None):
         profile = tomllib.load(f)
     if profile.get("version", 0) > VERSION:
         raise ProfileError(f"profile version {profile['version']} is newer than this twinpc ({VERSION}) — upgrade twinpc")
-    return profile
+    return validate(profile)

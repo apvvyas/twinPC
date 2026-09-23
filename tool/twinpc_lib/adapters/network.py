@@ -39,7 +39,12 @@ class Cable:
                      f"give the twin the fixed address {v['addr']}",
                      check=f"ip -4 -o addr show | grep -q ' {addr_re}/24 '"
                            f" && nmcli -g ipv4.method connection show {con} | grep -qx manual",
-                     apply=f"nmcli connection modify {con} ipv4.method manual ipv4.addresses {v['addr']}/24"
-                           f" ipv4.gateway 10.42.0.1 ipv4.dns '10.42.0.1 1.1.1.1' && nmcli connection up {con}",
+                     # changing the address would cut the SSH link this runs over: only pin the current one
+                     apply=f"cur=$(ip -4 -o addr show dev {v['twin_if']} | awk '{{print $4}}' | cut -d/ -f1 | head -1);"
+                           f" [ \"$cur\" = {v['addr']} ] || {{ echo \"refusing to move the twin from $cur to"
+                           f" {v['addr']} over this SSH link — fix twin_addr in the profile\" >&2; exit 1; }};"
+                           f" nmcli connection modify {con} ipv4.method manual ipv4.addresses {v['addr']}/24"
+                           f" ipv4.gateway 10.42.0.1 ipv4.dns '10.42.0.1 1.1.1.1'"
+                           f" && nmcli device reapply {v['twin_if']}",
                      root=True, check_root=False),
         ]

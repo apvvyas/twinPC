@@ -90,9 +90,17 @@ elif have bootctl >/dev/null; then bootloader=systemd-boot
 else bootloader=unknown; fi
 say bootloader "$bootloader"
 
-# --- wired port: a real (non-virtual, non-wireless) interface with a link
+# --- wired port: the one that reaches the other PC, else a real (non-virtual, non-wireless) port with a link
 wired_iface=
-for d in "$R"/sys/class/net/*; do
+peer=${SSH_CONNECTION%% *}
+if [ -n "$peer" ]; then       # probed over ssh: the port the main PC's connection came in on
+  wired_iface=$(tool ip -o route get "$peer" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
+fi
+if [ -z "$wired_iface" ]; then  # the main PC: the port sharing its connection (NetworkManager's 10.42.0.1)
+  wired_iface=$(tool ip -o -4 addr show 2>/dev/null | awk '$4 ~ /^10\.42\.0\.1\// {print $2; exit}')
+fi
+[ -n "$wired_iface" ] && [ -d "$R/sys/class/net/$wired_iface/wireless" ] && wired_iface=
+[ -n "$wired_iface" ] || for d in "$R"/sys/class/net/*; do
   n=${d##*/}
   [ "$n" = lo ] && continue
   [ -d "$d/wireless" ] && continue

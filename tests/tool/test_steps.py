@@ -142,7 +142,7 @@ class RunnerTests(unittest.TestCase):
         class R(S.Runner):
             def _exec(self, argv, data):
                 seen.append((argv, data))
-                return S.Result(1, "") if argv[-1].endswith("sudo -n true") else S.Result(0, "ok")
+                return S.Result(1, "") if argv[-1].endswith("sudo -k -n true") else S.Result(0, "ok")
         runner = R("twin", ask=lambda p: asked.append(p) or "pw", isatty=lambda: True)
         runner.run("twin", "a", root=True)
         runner.run("twin", "b", root=True)
@@ -158,7 +158,7 @@ class RunnerTests(unittest.TestCase):
                 seen.append(argv)
                 return S.Result(0, "")
         R("mytwin").run("twin", "echo hi")
-        self.assertEqual(seen[0][:4], ["ssh", "-o", "BatchMode=yes", "mytwin"])
+        self.assertEqual(seen[0][:7], ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", "mytwin"])
 
 
 if __name__ == "__main__":

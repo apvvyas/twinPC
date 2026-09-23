@@ -72,9 +72,9 @@ class ProfileTests(unittest.TestCase):
 
     def test_quotes_are_escaped(self):
         p = P.build(MAIN, TWIN)
-        p["user"]["twin_user"] = 'a"b\\c'
+        p["twin"]["session"] = 'a"b\\c'          # free text: twin_user etc. are validated
         with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(P.load(P.save(p, Path(d, "p.toml")))["user"]["twin_user"], 'a"b\\c')
+            self.assertEqual(P.load(P.save(p, Path(d, "p.toml")))["twin"]["session"], 'a"b\\c')
 
     def test_missing_and_newer_profiles(self):
         with tempfile.TemporaryDirectory() as d:

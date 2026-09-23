@@ -6,13 +6,14 @@ tell what is already done and `doctor` can check health.
 """
 import base64
 import hashlib
+import re
 from pathlib import Path
 
 from . import adapters
 from .adapters.base import Unsupported
 from .adapters.network import ssh_config
 from .adapters.packages import pkg_step
-from .steps import StepError, cmd_step, file_step, line_step, manual_step, unit_step, unsupported_step
+from .steps import StepError, cmd_step, file_step, line_step, manual_step, ufw_step, unit_step, unsupported_step
 
 USER_ENV = "export XDG_RUNTIME_DIR=/run/user/$(id -u);"   # reach the desktop user's session services over ssh
 LAN_MOUSE_URL = "https://github.com/feschber/lan-mouse/releases/download/v0.11.0/lan-mouse-linux-x86_64"
@@ -72,6 +73,9 @@ POLKIT_RULE = """polkit.addRule(function(action, subject) {
 
 
 def values(profile, repo):
+    if not re.fullmatch(r"[A-Za-z0-9_./+-]+", str(repo)):
+        raise StepError(f"the checkout path {str(repo)!r} has spaces or shell characters — move the repo"
+                        " to a plain path (letters, digits, . _ - + /)")
     n, u, m, t = (profile.get(k, {}) for k in ("network", "user", "main", "twin"))
     return {"host": n.get("twin_host") or "twin", "addr": n.get("twin_addr") or "10.42.0.11",
             "main_addr": m.get("addr") or "10.42.0.1", "user": u.get("twin_user", ""),
@@ -118,10 +122,12 @@ def _connection(profile, repo, v):
         return [unsupported_step("connection", "main", net.reason())]
     return net.steps(profile, repo, v) + [
         pkg_step("connection", "twin", _pk(profile, "twin"), ["openssh"]),
-        unit_step("connection.twin.sshd", "connection", "twin", "sshd", user=False),
-        cmd_step("connection.twin.firewall", "connection", "twin", "allow SSH (22/tcp) in the twin's firewall",
-                 check="! command -v ufw >/dev/null || ufw status | grep -q '^22/tcp'",
-                 apply="ufw allow 22/tcp", root=True),
+        cmd_step("connection.twin.sshd", "connection", "twin", "run the SSH server at boot",
+                 check="systemctl is-enabled --quiet sshd 2>/dev/null || systemctl is-enabled --quiet ssh 2>/dev/null"
+                       " || systemctl is-enabled --quiet ssh.socket 2>/dev/null",
+                 apply="systemctl enable --now sshd 2>/dev/null || systemctl enable --now ssh",
+                 root=True, check_root=False),
+        ufw_step("connection.twin.firewall", "connection", "twin", "22/tcp", "allow SSH (22/tcp) in the twin's firewall"),
     ]
 
 
@@ -193,6 +199,9 @@ def _mount(profile, repo, v):
 
 def _power(profile, repo, v):
     ifc = v["twin_if"]
+    if not ifc:
+        return [unsupported_step("power", "twin", "the twin's wired port is unknown — plug in the cable and run"
+                                 " twinpc detect --force")]
     con = f'"$(nmcli -g GENERAL.CONNECTION device show {ifc})"'
     return [
         pkg_step("power", "twin", _pk(profile, "twin"), ["ethtool"]),
@@ -215,10 +224,13 @@ def _power(profile, repo, v):
                  check='[ "$(systemctl is-enabled sleep.target 2>/dev/null)" = masked ]',
                  apply="systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target",
                  root=True, check_root=False),
-        manual_step("power.twin.bios", "power", "twin", "enable Wake-on-LAN in the twin's firmware",
+        manual_step("power.main.bios", "power", "main", "confirm Wake-on-LAN is enabled in the twin's firmware",
                     "In the twin's BIOS enable wake from PCI-E / LAN and disable ErP / deep sleep "
-                    "(ASUS: Advanced → APM Configuration).",
-                    check=f"ethtool {ifc} | grep -q 'Wake-on: g'", check_root=True),
+                    "(ASUS: Advanced → APM Configuration). Software cannot see this setting, so twinpc "
+                    "asks once and remembers your answer.",
+                    check='[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/twinpc/bios-wol-confirmed" ]',
+                    after_confirm='mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/twinpc"'
+                                  ' && touch "${XDG_CONFIG_HOME:-$HOME/.config}/twinpc/bios-wol-confirmed"'),
         file_step("power.main.link-unit", "power", "main", "$HOME/.config/systemd/user/twin-link.service",
                   repo_unit(repo, "main/twin-link.service")),
         unit_step("power.main.link", "power", "main", "twin-link.service"),
@@ -262,9 +274,7 @@ def _kvm(profile, repo, v):
                  apply=f"mkdir -p ~/.local/bin && curl -fsSL -o ~/.local/bin/lan-mouse {LAN_MOUSE_URL}"
                        " && chmod +x ~/.local/bin/lan-mouse"),
         pkg_step("kvm", "twin", _pk(profile, "twin"), ["lan-mouse"]),
-        cmd_step("kvm.twin.firewall", "kvm", "twin", "allow lan-mouse (4242/udp) in the twin's firewall",
-                 check="! command -v ufw >/dev/null || ufw status | grep -q '^4242/udp'",
-                 apply="ufw allow 4242/udp", root=True),
+        ufw_step("kvm.twin.firewall", "kvm", "twin", "4242/udp", "allow lan-mouse (4242/udp) in the twin's firewall"),
         cmd_step("kvm.main.cert", "kvm", "main", "create this PC's lan-mouse certificate",
                  check="[ -f ~/.config/lan-mouse/lan-mouse.pem ]", apply=cert.format(bin="~/.local/bin/lan-mouse")),
         cmd_step("kvm.twin.cert", "kvm", "twin", "create the twin's lan-mouse certificate",
@@ -304,21 +314,33 @@ def _desktop(profile, repo, v):
         file_step("desktop.main.remmina-profile", "desktop", "main", "$HOME/.local/share/remmina/twin.remmina",
                   _read(repo, "main/twin.remmina")),
     ]
-    md = adapters.get("desktop", profile.get("main", {}).get("desktop", ""))
-    steps += ([unsupported_step("desktop", "main", md.reason(), "shortcut")] if isinstance(md, Unsupported) else
+    md = _desktop_for(profile, "main", "shortcut_steps")
+    steps += ([unsupported_step("desktop", "main", md, "shortcut")] if isinstance(md, str) else
               md.shortcut_steps("desktop", "twin-desktop", "Twin PC desktop (fullscreen toggle)", "<Super>F12",
                                 f"{v['home']}/.local/bin/twin desktop"))
-    td = adapters.get("desktop", profile.get("twin", {}).get("desktop", ""))
-    steps += ([unsupported_step("desktop", "twin", td.reason())] if isinstance(td, Unsupported) else
+    td = _desktop_for(profile, "twin", "remote_desktop_steps")
+    steps += ([unsupported_step("desktop", "twin", td)] if isinstance(td, str) else
               td.remote_desktop_steps("desktop", _pk(profile, "twin")))
     return steps
 
 
 def _gui(profile, repo, v):
-    td = adapters.get("desktop", profile.get("twin", {}).get("desktop", ""))
-    if isinstance(td, Unsupported):
-        return [unsupported_step("gui", "twin", td.reason())]
+    td = _desktop_for(profile, "twin", "gui_steps")
+    if isinstance(td, str):
+        return [unsupported_step("gui", "twin", td)]
     return td.gui_steps("gui", _pk(profile, "twin"), v)
+
+
+def _desktop_for(profile, machine, method):
+    """The desktop adapter for `machine` if it can do `method` there, else the reason it can't."""
+    value = profile.get(machine, {}).get("desktop", "")
+    adapter = adapters.get("desktop", value)
+    if isinstance(adapter, Unsupported):
+        return adapter.reason()
+    if not hasattr(adapter, method):
+        where = "the main PC" if machine == "main" else "the twin"
+        return f"desktop '{value}' on {where} is not supported yet (planned)"
+    return adapter
 
 
 def _nic_fix(profile, repo, v):
@@ -347,6 +369,10 @@ def build_plan(profile, repo, only=None):
     v = values(profile, repo)
     steps = []
     for name in FEATURES:
-        if not only or name in only:
-            steps += BUILDERS[name](profile, Path(repo), v)
+        if only and name not in only:
+            continue
+        fsteps = BUILDERS[name](profile, Path(repo), v)
+        # a package that can't be installed makes the rest of its feature pointless: skip it all
+        missing = [s for s in fsteps if s.skip_reason and s.id.endswith(".packages")]
+        steps += missing[:1] if missing else fsteps
     return steps

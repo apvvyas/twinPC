@@ -107,7 +107,8 @@ class GpuTests(unittest.TestCase):
 class BootUnlockTests(unittest.TestCase):
     def test_mkinitcpio_limine(self):
         ids = [s.id for s in bootunlock.Mkinitcpio().unlock_steps(PROFILE, REPO, V, packages.Pacman())]
-        self.assertEqual(ids, ["unlock.twin.packages", "unlock.twin.key", "unlock.twin.hooks",
+        self.assertEqual(ids, ["unlock.twin.packages", "unlock.twin.key", "unlock.twin.encrypt-hook",
+                               "unlock.twin.hooks",
                                "unlock.twin.cmdline", "unlock.twin.rebuild"])
 
     def test_other_bootloader_is_unsupported(self):

@@ -53,6 +53,9 @@ class PlanTests(unittest.TestCase):
                 "main": {**PROFILE["main"], "pkg": "dnf", "desktop": "kde"},
                 "twin": {**PROFILE["twin"], "desktop": "sway", "gpu": "nvidia", "initramfs": "dracut"}}
         reasons = {s.skip_reason for s in F.build_plan(prof, REPO) if s.skip_reason}
+        # a feature whose packages can't be installed collapses to that one skip, hiding its desktop reason
+        kde_prof = {**prof, "main": {**prof["main"], "pkg": "apt"}}
+        reasons |= {s.skip_reason for s in F.build_plan(kde_prof, REPO) if s.skip_reason}
         for expected in ["network 'lan' is not supported yet (planned)",
                          "packages 'dnf' is not supported yet (planned)",
                          "desktop 'kde' is not supported yet (planned)",
