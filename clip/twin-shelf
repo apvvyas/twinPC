@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+"""twin-shelf — drag files to the other PC (man twin: SHELF).
+
+A thin drop strip sits on the screen edge that faces the other PC. Files dropped on it are copied
+there by twin-clipd, and a shelf pops up at that PC's edge holding them: drag them into any folder.
+"""
+import argparse
+import hashlib
+import json
+import os
+import socket
+import subprocess
+import threading
+import time
+from pathlib import Path
+
+EDGES = ("left", "right", "top", "bottom")
+STRIP_TITLE, SHELF_TITLE = "twinPC drop strip", "twinPC shelf"    # the GNOME extension places these
+HIDE_AFTER = 120                          # seconds without news before the shelf hides itself
+RETRY = 5                                 # seconds between attempts to reach twin-clipd
+EMPTY_SHA = hashlib.sha256(b"").hexdigest()
+CSS = b"""
+.strip { background: rgba(53, 132, 228, 0.35); border-radius: 3px; }
+.strip.hover { background: rgba(53, 132, 228, 0.95); }
+.strip.down { background: rgba(128, 128, 128, 0.25); }
+.shelf { padding: 10px; }
+.handle { padding: 4px 8px; border-radius: 6px; background: rgba(53, 132, 228, 0.15); }
+"""
+
+
+def encode(kind, **fields):
+    """A twin-clipd control frame (the shelf only ever sends and receives frames without a body)."""
+    return json.dumps({"v": 1, "kind": kind, **fields, "size": 0, "sha": EMPTY_SHA}).encode() + b"\n"
+
+
+def read_header(stream):
+    """The next control frame's header; None at the end of the stream."""
+    line = stream.readline(65536)
+    if not line:
+        return None
+    h = json.loads(line)
+    if not isinstance(h, dict) or h.get("v") != 1 or h.get("size", 0) != 0:
+        raise ValueError("unexpected frame")
+    return h
+
+
+def socket_path(name):
+    run = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return Path(run) / "twinpc" / name
+
+
+def uris(paths):
+    return "".join(Path(p).absolute().as_uri() + "\r\n" for p in paths)
+
+
+def notify(msg):
+    try:
+        subprocess.run(["notify-send", "-a", "twinPC", "twinPC shelf", msg], timeout=5,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+class ShelfModel:
+    """What the strip and the shelf show, driven by `link` and `shelf` frames."""
+
+    def __init__(self):
+        self.link = False
+        self.dir = self.state = None
+        self.progress, self.error, self.items, self.expected = 0, "", [], 0
+
+    def apply(self, h):
+        """Update from a frame; returns 'link', 'shelf', or None for frames the shelf ignores."""
+        if h.get("kind") == "link":
+            self.link = bool(h.get("up"))
+            return "link"
+        if h.get("kind") != "shelf":
+            return None
+        if h.get("dir") != self.dir:
+            self.items, self.expected = [], 0
+        self.dir, self.state = h.get("dir"), h.get("state")
+        self.progress = int(h.get("progress") or 0)
+        self.error = str(h.get("error") or "")
+        if self.state == "ready":
+            paths = [p for p in h.get("paths") or [] if isinstance(p, str)]
+            self.expected = len(paths)
+            self.items = [p for p in paths if os.path.lexists(p)]
+        return "shelf"
+
+    def summary(self):
+        if self.state == "receiving":
+            return f"receiving… {self.progress} %"
+        if self.state == "failed":
+            return f"transfer failed — {self.error}"
+        if self.state == "ready":
+            n = len(self.items)
+            if n < self.expected:
+                return f"{n} of {self.expected} copied — drag into any folder"
+            return f"{n} item{'s' if n != 1 else ''} — drag into any folder"
+        return ""
+
+    def draggable(self):
+        return self.state == "ready" and bool(self.items)
+
+
+class Link:
+    """The connection to the local twin-clipd: frames arrive on a thread; the UI sends."""
+
+    def __init__(self, sock):
+        self.sock, self.conn, self.lock = sock, None, threading.Lock()
+
+    def send(self, frame):
+        with self.lock:
+            if self.conn is None:
+                return False
+            try:
+                self.conn.sendall(frame)
+                return True
+            except OSError:
+                return False
+
+    def run(self, on_frame):
+        """Connect (retrying), register as the shelf app and hand every frame to on_frame. Never returns."""
+        while True:
+            try:
+                s = socket.socket(socket.AF_UNIX)
+                s.connect(str(self.sock))
+                s.sendall(encode("hello", role="shelf"))
+                with self.lock:
+                    self.conn = s
+                stream = s.makefile("rb")
+                while (h := read_header(stream)) is not None:
+                    on_frame(h)
+            except (OSError, ValueError):
+                pass
+            with self.lock:
+                self.conn = None
+            on_frame({"kind": "link", "up": False})
+            time.sleep(RETRY)
+
+
+def send_drop(sock, paths):
+    """Send the local twin-clipd a drop of `paths` (made absolute) — for scripts and tests."""
+    s = socket.socket(socket.AF_UNIX)
+    s.settimeout(5)
+    s.connect(str(sock))
+    s.sendall(encode("drop", paths=[str(Path(p).absolute()) for p in paths]))
+    s.close()
+
+
+def selftest(sock):
+    try:
+        s = socket.socket(socket.AF_UNIX)
+        s.settimeout(5)
+        s.connect(str(sock))
+        s.sendall(encode("hello", role="probe"))
+        h = read_header(s.makefile("rb"))
+        s.close()
+    except (OSError, ValueError, TypeError):
+        print("shelf: twin-clipd isn't running here")
+        return 2
+    if h and h.get("shelf"):
+        print("shelf: running")
+        return 0
+    print("shelf: app not running (twin shelf on)")
+    return 1
+
+
+def write_edge(edge):
+    """Tell the GNOME extension which edge to place the strip and shelf on."""
+    p = socket_path("shelf.json")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(p.parent, 0o700)
+    p.write_text(json.dumps({"edge": edge}))
+
+
+def run_app(sock, edge):
+    """The drop strip and the shelf. GTK is imported only here, so the rest works without a display."""
+    import gi
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Gdk", "4.0")
+    from gi.repository import Gdk, Gio, GLib, Gtk, Pango
+    try:                                        # the twin (Hyprland): pin windows to the edge
+        gi.require_version("Gtk4LayerShell", "1.0")
+        from gi.repository import Gtk4LayerShell as LayerShell
+    except (ValueError, ImportError):
+        LayerShell = None                       # the main PC (GNOME): the twinPC extension places them
+
+    model, link = ShelfModel(), Link(sock)
+    across = edge in ("left", "right")
+    app = Gtk.Application(application_id="org.twinpc.Shelf", flags=Gio.ApplicationFlags.NON_UNIQUE)
+
+    def pin(win, width, height, margin=0):
+        win.set_decorated(False)
+        win.set_resizable(False)
+        win.set_default_size(width, height)
+        if LayerShell is not None and LayerShell.is_supported():
+            LayerShell.init_for_window(win)
+            LayerShell.set_layer(win, LayerShell.Layer.OVERLAY)
+            side = getattr(LayerShell.Edge, edge.upper())
+            LayerShell.set_anchor(win, side, True)
+            LayerShell.set_margin(win, side, margin)
+            LayerShell.set_keyboard_mode(win, LayerShell.KeyboardMode.NONE)
+
+    def icon_for(path):
+        if os.path.isdir(path):
+            return Gio.ThemedIcon.new("folder")
+        ctype, _ = Gio.content_type_guess(path, None)
+        return Gio.content_type_get_icon(ctype)
+
+    def drag_source(widget, paths_fn):
+        src = Gtk.DragSource(actions=Gdk.DragAction.COPY)
+
+        def prepare(_src, _x, _y):
+            paths = paths_fn()
+            if not paths:
+                return None
+            files = Gdk.FileList.new_from_list([Gio.File.new_for_path(p) for p in paths])
+            return Gdk.ContentProvider.new_union([
+                Gdk.ContentProvider.new_for_value(files),
+                Gdk.ContentProvider.new_for_bytes("text/uri-list", GLib.Bytes.new(uris(paths).encode())),
+            ])
+        src.connect("prepare", prepare)
+        widget.add_controller(src)
+
+    def activate(app):
+        css = Gtk.CssProvider()
+        css.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        monitors = Gdk.Display.get_default().get_monitors()
+        geo = monitors.get_item(0).get_geometry() if monitors.get_n_items() else None
+        long_side = ((geo.height if across else geo.width) // 3) if geo else 360
+
+        strip = Gtk.ApplicationWindow(application=app, title=STRIP_TITLE)
+        pin(strip, 6 if across else long_side, long_side if across else 6)
+        bar = Gtk.Box(hexpand=True, vexpand=True)
+        bar.add_css_class("strip")
+        strip.set_child(bar)
+
+        drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
+
+        def enter(*_):
+            bar.add_css_class("hover")
+            return Gdk.DragAction.COPY
+
+        def on_drop(_target, value, _x, _y):
+            bar.remove_css_class("hover")
+            paths = [f.get_path() for f in value.get_files() if f.get_path()]
+            if not paths:
+                return False
+            if not model.link:
+                notify("the other PC isn't connected — files not sent")
+                return False
+            return link.send(encode("drop", paths=paths))
+        drop.connect("enter", enter)
+        drop.connect("leave", lambda *_: bar.remove_css_class("hover"))
+        drop.connect("drop", on_drop)
+        bar.add_controller(drop)
+
+        shelf = Gtk.ApplicationWindow(application=app, title=SHELF_TITLE)
+        pin(shelf, 300, 10, margin=14)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.add_css_class("shelf")
+        head = Gtk.Box(spacing=6)
+        label = Gtk.Label(xalign=0, hexpand=True, wrap=True)
+        close = Gtk.Button(icon_name="window-close-symbolic")
+        close.add_css_class("flat")
+        close.connect("clicked", lambda *_: shelf.set_visible(False))
+        head.append(label)
+        head.append(close)
+        bar_progress = Gtk.ProgressBar()
+        items = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        drag_all = Gtk.Label(label="⠿ drag all into a folder", xalign=0)
+        drag_all.add_css_class("handle")
+        drag_source(drag_all, lambda: list(model.items))
+        for w in (head, bar_progress, items, drag_all):
+            box.append(w)
+        shelf.set_child(box)
+        hide = {"id": 0}
+
+        def hide_shelf():
+            hide["id"] = 0
+            shelf.set_visible(False)
+            return False
+
+        def refresh(what):
+            if what is None:
+                return
+            if model.link:
+                bar.remove_css_class("down")
+                bar.set_tooltip_text("drop files here to send them to the other PC")
+            else:
+                bar.add_css_class("down")
+                bar.set_tooltip_text("the other PC isn't connected")
+            if what != "shelf":
+                return
+            label.set_text(model.summary())
+            bar_progress.set_visible(model.state == "receiving")
+            bar_progress.set_fraction(model.progress / 100)
+            items.remove_all()
+            for p in model.items:
+                row = Gtk.Box(spacing=8)
+                row.append(Gtk.Image.new_from_gicon(icon_for(p)))
+                row.append(Gtk.Label(label=Path(p).name, xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE))
+                drag_source(row, lambda p=p: [p])
+                items.append(row)
+            drag_all.set_visible(len(model.items) > 1)
+            shelf.present()
+            if hide["id"]:
+                GLib.source_remove(hide["id"])
+            hide["id"] = GLib.timeout_add_seconds(HIDE_AFTER, hide_shelf)
+
+        def on_frame(h):
+            def apply():
+                refresh(model.apply(h))
+                return False
+            GLib.idle_add(apply)
+
+        strip.present()
+        refresh("link")
+        threading.Thread(target=link.run, args=(on_frame,), daemon=True).start()
+
+    app.connect("activate", activate)
+    return app.run(None)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="twin-shelf", description="drag files to the other PC")
+    ap.add_argument("--edge", choices=EDGES, default="left", help="the screen edge that faces the other PC")
+    ap.add_argument("--socket", default="clip.sock", help="twin-clipd's socket name (on the twin: shelf.sock)")
+    ap.add_argument("--selftest", action="store_true", help="is the shelf app running and connected?")
+    ap.add_argument("--drop", nargs="+", metavar="PATH", help="send these files to the other PC and exit")
+    a = ap.parse_args(argv)
+    sock = socket_path(a.socket)
+    if a.selftest:
+        return selftest(sock)
+    if a.drop:
+        send_drop(sock, a.drop)
+        return 0
+    write_edge(a.edge)
+    return run_app(sock, a.edge)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
