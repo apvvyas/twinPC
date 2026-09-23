@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""twin-route — decide whether a command line typed on this PC runs here or on the twin PC.
+
+  twin-route [--cwd DIR] [--load CPU,RAM] [--rules FILE] [--explain] -- "<command line>"
+      prints "twin <reason>" or "local <reason>"
+  twin-route [--rules FILE] --map-cwd DIR
+      prints the twin-side folder for DIR ("~/work/<rel>", or "~" outside the workspace)
+
+Side-effect free: reads only the rules file, /proc/meminfo and the CPU sample written by
+twin-route-load. Workspace checks never touch the filesystem (the sshfs mount may be dead).
+Design: docs/superpowers/specs/2026-09-23-twin-task-routing-design.md
+"""
+import argparse
+import fnmatch
+import os
+import shlex
+import sys
+import tomllib
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+DEFAULT_RULES = HERE / "rules.default.toml"
+USER_RULES = Path.home() / ".config" / "twin-route" / "rules.toml"
+SEPARATORS = {"|", "||", "&&", ";", "&", "|&"}
+WRAPPERS = {"time", "nice", "nohup", "env", "command", "exec"}
+
+
+def load_rules(path=None):
+    p = Path(path) if path else (USER_RULES if USER_RULES.exists() else DEFAULT_RULES)
+    with open(p, "rb") as f:
+        return tomllib.load(f)
+
+
+def _is_assignment(word):
+    name, eq, _ = word.partition("=")
+    return bool(eq) and name.isidentifier()
+
+
+def stages(line):
+    """Split a command line into pipeline stages (lists of words); None if it should not be routed."""
+    if not line.strip() or "\n" in line or line.rstrip().endswith("\\"):
+        return None
+    lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    try:
+        tokens = list(lex)
+    except ValueError:                       # unbalanced quotes
+        return None
+    out, cur, skip_next = [], [], False
+    for t in tokens:
+        if skip_next:                        # target of a redirection
+            skip_next = False
+            continue
+        if t in SEPARATORS:
+            if cur:
+                out.append(cur)
+            cur = []
+        elif t in ("(", ")") or t.startswith("<<") or "$(" in t or t == "$":
+            return None                      # subshells, command substitution, heredocs
+        elif t and set(t) <= set("<>&"):
+            skip_next = not t.endswith("&")  # "> file" skips the file; ">&" is followed by an fd
+        else:
+            cur.append(t)
+    if cur:
+        out.append(cur)
+    cleaned = []
+    for st in out:
+        while st and _is_assignment(st[0]):
+            st = st[1:]
+        while len(st) > 1 and st[0] in WRAPPERS:
+            st = st[1:]
+        if st:
+            cleaned.append(st)
+    return cleaned or None
+
+
+def matches(stage, pattern):
+    name = os.path.basename(stage[0])
+    if " " not in pattern:
+        return fnmatch.fnmatchcase(name, pattern)
+    text = " ".join([name] + stage[1:])
+    return fnmatch.fnmatchcase(text, pattern) or fnmatch.fnmatchcase(text, pattern + " *")
+
+
+def first_match(sts, patterns):
+    for st in sts:
+        for p in patterns:
+            if matches(st, p):
+                return p
+    return None
+
+
+def _ws(rules):
+    return os.path.abspath(os.path.expanduser(rules["workspace"]["local"]))
+
+
+def in_workspace(cwd, rules):
+    ws, c = _ws(rules), os.path.abspath(cwd)   # abspath is pure string work: no stat
+    return c == ws or c.startswith(ws + os.sep)
+
+
+def map_cwd(cwd, rules):
+    if not in_workspace(cwd, rules):
+        return "~"
+    rel = os.path.relpath(os.path.abspath(cwd), _ws(rules))
+    remote = rules["workspace"]["remote"].rstrip("/")
+    return remote if rel == "." else f"{remote}/{rel}"
+
+
+def needs_local_files(sts, cwd, rules):
+    if first_match(sts, rules.get("needs_cwd", [])):
+        return True
+    for st in sts:
+        for w in st[1:]:
+            if w.startswith(("-", "/", "~")):
+                continue
+            if os.path.exists(os.path.join(cwd, w)):
+                return True
+    return False
+
+
+def current_load():
+    cpu = 0.0
+    sample = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "twin-route.load"
+    try:
+        cpu = float(sample.read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        pass
+    mem = {}
+    with open("/proc/meminfo") as fh:
+        for row in fh:
+            key, _, val = row.partition(":")
+            mem[key] = int(val.split()[0])
+    ram = 100.0 * (1 - mem["MemAvailable"] / mem["MemTotal"])
+    return cpu, ram
+
+
+def decide(line, cwd, load, rules):
+    sts = stages(line)
+    if sts is None:
+        return "local", "unparsable"
+    head = sts[0][0]
+    if head == "local":
+        return "local", "forced"
+    if head in ("twin", "twin-exec"):
+        return "local", "passthrough"
+    never = rules.get("never_twin", [])
+    if all(any(matches(st, p) for p in never) for st in sts):
+        return "local", f"never:{first_match(sts, never)}"
+    if in_workspace(cwd, rules):
+        return "twin", "workspace"
+    pattern = first_match(sts, rules.get("always_twin", []))
+    if pattern:
+        decision = ("twin", f"always:{pattern}")
+    else:
+        pattern = first_match(sts, rules.get("load_offload", []))
+        if not pattern:
+            return "local", "default"
+        cpu, ram = load
+        limits = rules.get("load", {})
+        usage = f"cpu={cpu:.0f}% ram={ram:.0f}%"
+        if cpu >= limits.get("cpu_threshold", 80) or ram >= limits.get("ram_threshold", 85):
+            decision = ("twin", f"load:{pattern} {usage}")
+        else:
+            return "local", f"load-ok:{pattern} {usage}"
+    if needs_local_files(sts, cwd, rules):
+        return "local", "files-not-on-twin"
+    return decision
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--cwd", default=None)
+    ap.add_argument("--load", help="CPU,RAM percentages instead of measuring (tests)")
+    ap.add_argument("--rules")
+    ap.add_argument("--explain", action="store_true")
+    ap.add_argument("--map-cwd", metavar="DIR")
+    ap.add_argument("line", nargs="*")
+    a = ap.parse_args(argv)
+    rules = load_rules(a.rules)
+    if a.map_cwd is not None:
+        print(map_cwd(a.map_cwd, rules))
+        return 0
+    cwd = a.cwd or os.environ.get("PWD") or os.getcwd()
+    line = " ".join(a.line)
+    load = tuple(float(x) for x in a.load.split(",")) if a.load else current_load()
+    decision, reason = decide(line, cwd, load, rules)
+    print(f"{decision} {reason}")
+    if a.explain:
+        print(f"  stages:    {stages(line)}")
+        print(f"  cwd:       {cwd} (workspace: {in_workspace(cwd, rules)} → twin {map_cwd(cwd, rules)})")
+        print(f"  load:      cpu={load[0]:.0f}% ram={load[1]:.0f}%")
+        print(f"  rules:     {a.rules or (USER_RULES if USER_RULES.exists() else DEFAULT_RULES)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

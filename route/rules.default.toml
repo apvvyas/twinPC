@@ -1,0 +1,25 @@
+# twin task routing rules — copied to ~/.config/twin-route/rules.toml on install; edit that copy.
+# Patterns are shell globs. A pattern without spaces matches the command name (first word);
+# a pattern with spaces matches "command args…" (a trailing " *" is implied).
+# (The lists must stay above the [load]/[workspace] tables: TOML puts keys after a table header inside it.)
+
+always_twin = ["ollama", "python *train*.py", "python3 *train*.py", "torchrun", "accelerate",
+               "whisper", "comfyui", "stable-diffusion*", "claude -p*", "llama-*"]
+
+never_twin  = ["cd", "ls", "git", "vim", "nvim", "nano", "code", "sudo", "apt", "systemctl",
+               "ssh", "exit", "source", ".", "export", "history", "man", "local", "twin", "twin-exec"]
+
+load_offload = ["make", "cargo build*", "cargo test*", "pytest*", "npm run build*", "npm test*",
+                "ffmpeg", "docker build*", "gradle*", "python *", "python3 *"]
+
+# commands that work on the current folder: outside ~/twin they stay here (the files aren't on twin)
+needs_cwd   = ["claude*", "make*", "pytest*", "npm *", "cargo *", "gradle*", "docker build*",
+               "python *.py*", "python3 *.py*"]
+
+[load]
+cpu_threshold = 80        # % busy, 1-minute average on this PC
+ram_threshold = 85        # % RAM used on this PC
+
+[workspace]
+local = "~/twin"          # twin's ~/work mounted here
+remote = "~/work"
