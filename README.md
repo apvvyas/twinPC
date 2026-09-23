@@ -11,7 +11,7 @@ One ethernet cable. No cloud, no cluster, no new habits.
 ![Bash](https://img.shields.io/badge/Bash-5.x-4EAA25?logo=gnubash&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![AMD ROCm](https://img.shields.io/badge/AMD-ROCm-ED1C24?logo=amd&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-254%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-274%20passing-brightgreen)
 
 [Features](#-features) · [How it works](#-how-it-works) · [Quick start](#-quick-start) · [Commands](#-command-cheat-sheet) · [Configuration](#%EF%B8%8F-configuration) · [Troubleshooting](#-troubleshooting)
 
@@ -105,6 +105,10 @@ there; drag them into **any folder**. Big folders welcome (rsync over SSH).
 
 </td>
 <td valign="top">
+
+### 🎙️ Mic & camera
+Apps on the twin use **this PC's microphone and webcam** — calls, OBS, Whisper, OpenCV.
+The camera light comes on only while a twin app is using it.
 
 </td>
 </tr>
@@ -232,6 +236,7 @@ Optional GPU PyTorch is part of the `gpu-stack` feature (~4 GB download).
 | `twin audio test` | play a tone on the twin through your speakers |
 | `twin clip status` · `twin clip off` | clipboard sharing between the PCs |
 | `twin shelf status` · `twin shelf off` | the drag-files-across strip and shelf |
+| `twin camera status` · `twin camera off` | this PC's mic and camera for apps on the twin |
 
 Full reference: **`man twin`**.
 
@@ -287,6 +292,14 @@ Every transfer is logged: `journalctl --user -t twin-clipd`.
 </details>
 
 <details>
+<summary><b>The twin's webcam shows only black</b></summary>
+
+`twin camera status`. Black means this PC's camera isn't streaming: another app here may be using it
+(you get a "busy" notification on the twin), or the service isn't connected. If `/dev/video9` is missing
+on the twin, run `sudo modprobe v4l2loopback` there (after a kernel update, reboot the twin once).
+</details>
+
+<details>
 <summary><b>The twin waits at its disk-encryption prompt</b></summary>
 
 Run `twin unlock` in a terminal and type the disk password.
@@ -317,9 +330,9 @@ twin · twin-completion.bash · man/   the twin command, tab completion and manu
 route/                               automatic task routing — router, rules, runner, bash hook
 main/                                main-PC services and settings · main/install.sh
 tool/                                twinpc: probe, profile, step engine, platform adapters, features
-clip/                                clipboard + drag-files-across — twin-clipd, twin-shelf, GNOME extension
+clip/                                clipboard, drag-files-across, mic & camera — twin-clipd, twin-shelf, twin-camera, GNOME extension
 twinpc/                              files installed on the twin (PipeWire output, lan-mouse unit, PyTorch script)
-tests/                               254 unit & integration tests + system checks
+tests/                               274 unit & integration tests + system checks
 docs/                                design notes
 ```
 
@@ -327,9 +340,9 @@ docs/                                design notes
 
 ```bash
 python3 -m unittest tests.test_twin_route tests.test_hook tests.test_clipd tests.test_clipd_link \
-  tests.test_clip_extension tests.test_shelf tests.test_clipd_shelf tests.tool.test_probe tests.tool.test_profile tests.tool.test_steps \
+  tests.test_clip_extension tests.test_shelf tests.test_clipd_shelf tests.test_camera tests.test_camera_link tests.tool.test_probe tests.tool.test_profile tests.tool.test_steps \
   tests.tool.test_adapters tests.tool.test_features tests.tool.test_cli tests.tool.test_review_fixes \
-  tests.tool.test_clipboard tests.tool.test_shelf              # fast, local
+  tests.tool.test_clipboard tests.tool.test_shelf tests.tool.test_camera              # fast, local
 python3 -m unittest tests.test_twin_exec                    # needs the twin running
 for t in tests/*.sh; do bash "$t"; done                     # system checks
 ```

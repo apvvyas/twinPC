@@ -42,6 +42,7 @@ twin — run and manage jobs on the twin PC   (full manual: man twin)
   twin audio [on|off|status|test] twin's sound through this PC's speakers
   twin clip [status|on|off]    clipboard sharing with twin (text, images, files)
   twin shelf [status|on|off]   drop files on the screen edge → a shelf on the other PC to drag them from
+  twin camera [status|on|off]  this PC's mic and camera for apps on twin (camera only while twin uses it)
   twin sh [cmd...]             shell on twin (or run a one-off command)
 
   twin desktop [stop]          toggle twin's screen fullscreen here (Super+F12) — for headless twin
@@ -196,6 +197,26 @@ case "$cmd" in
            ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" 'systemctl --user stop twin-shelf.service' || true
            echo "shelf OFF until 'twin shelf on' or your next login" ;;
       *) echo "usage: twin shelf status|on|off"; exit 1 ;;
+    esac
+    ;;
+  camera)
+    # this PC's mic and camera on the twin: twin-camera.service here + main-pc-mic.conf there (man twin: CAMERA)
+    MIC='f=$HOME/.config/pipewire/pipewire.conf.d/main-pc-mic.conf; export XDG_RUNTIME_DIR=/run/user/$(id -u)'
+    case ${1:-status} in
+      status)
+        "$HOME/.local/bin/twin-camera" --selftest || true
+        ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" "$MIC"'
+          [ -e /dev/video9 ] && echo "twin webcam: Main PC camera (/dev/video9)" || echo "twin webcam: missing (sudo modprobe v4l2loopback)"
+          pactl list short sources | grep -q main-pc-mic && echo "twin mic: Main PC microphone" || echo "twin mic: off"' ;;
+      on)  systemctl --user start twin-camera.service
+           ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" "$MIC"'
+             [ -f "$f.off" ] && mv "$f.off" "$f" && systemctl --user restart pipewire pipewire-pulse wireplumber; true'
+           echo "mic and camera sharing ON" ;;
+      off) systemctl --user stop twin-camera.service
+           ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" "$MIC"'
+             [ -f "$f" ] && mv "$f" "$f.off" && systemctl --user restart pipewire pipewire-pulse wireplumber; true'
+           echo "mic and camera sharing OFF until 'twin camera on'" ;;
+      *) echo "usage: twin camera status|on|off"; exit 1 ;;
     esac
     ;;
   route)

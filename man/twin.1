@@ -295,6 +295,36 @@ shows whether the shelf app runs and is connected on each PC;
 hides the strips until
 .B twin shelf on
 or your next login.
+.SH CAMERA AND MICROPHONE
+Apps on the twin get this PC's microphone ("Main PC microphone", the twin's default input)
+and camera ("Main PC camera",
+.IR /dev/video9 ).
+The microphone follows this PC's default input and is only read while an app on the twin
+records. The camera turns on here only while an app on the twin has the webcam open, and
+off again 5 seconds after the last one closes it; meanwhile the twin's webcam shows a black
+picture. The user service
+.I twin-camera.service
+runs
+.BR twin-camera ,
+which keeps an SSH link to
+.B twin-camera \-\-watch
+on the twin and streams the camera's MJPEG to
+.B twin-camera \-\-feed
+when asked. Picture size and rate:
+.B TWIN_CAMERA_SIZE
+(default 1280x720) and
+.B TWIN_CAMERA_FPS
+(default 30) in
+.IR ~/.config/twinpc/config .
+The twin's webcam is a v4l2loopback kernel module (installed once with sudo).
+.TP
+.BR "camera " [ status | on | off ]
+.B status
+shows whether the camera service is connected and streaming, and whether the twin's
+webcam and microphone exist;
+.B off
+stops sharing both until
+.BR "twin camera on" .
 .SH TASK ROUTING
 Commands typed in a bash terminal on this PC are checked when you press Enter.
 GPU/AI work (ollama, *train*.py, whisper, torchrun, claude -p, …), anything run inside
