@@ -1,0 +1,11 @@
+[Unit]
+Description=twinPC camera — the main PC's camera as a webcam on the twin, while the twin uses it
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/twin-camera --host twin
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

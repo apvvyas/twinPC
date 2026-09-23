@@ -13,6 +13,7 @@ wl-clipboard = { apt = "wl-clipboard", pacman = "wl-clipboard", dnf = "wl-clipbo
 python-gi = { apt = "python3-gi", pacman = "python-gobject", dnf = "python3-gobject" }
 gtk4-gir = { apt = "gir1.2-gtk-4.0", pacman = "gtk4", dnf = "gtk4" }
 gtk4-layer-shell = { pacman = "gtk4-layer-shell" }
+ffmpeg = { apt = "ffmpeg", pacman = "ffmpeg", dnf = "ffmpeg-free" }
 docker = { apt = "docker.io", pacman = "docker", dnf = "moby-engine" }
 lan-mouse = { pacman = "lan-mouse" }
 ollama-rocm = { pacman = "ollama-rocm" }

@@ -43,7 +43,7 @@ class PlanTests(unittest.TestCase):
         ids = {s.id for s in F.build_plan(PROFILE, REPO)}
         for expected in ["connection.twin.static-ip", "cli.main.command", "gpu-stack.twin.pytorch",
                          "routing.main.hook", "mount.main.mount", "power.twin.wol-arm", "power.twin.no-sleep",
-                         "unlock.twin.rebuild", "unlock.main.alias", "kvm.main.config", "kvm.twin.config", "clipboard.main.link", "shelf.main.link",
+                         "unlock.twin.rebuild", "unlock.main.alias", "kvm.main.config", "kvm.twin.config", "clipboard.main.link", "shelf.main.link", "camera.main.link",
                          "audio.twin.default", "desktop.main.shortcut", "gui.twin.uinput", "nic-fix.main.i225"]:
             self.assertIn(expected, ids)
 

@@ -384,6 +384,56 @@ def _audio(profile, repo, v):
     ]
 
 
+CAMERA_OPTIONS = 'options v4l2loopback video_nr=9 card_label="Main PC camera" exclusive_caps=1\n'
+
+
+def _camera(profile, repo, v):
+    pkg = profile.get("twin", {}).get("pkg", "")
+    if pkg != "pacman":
+        return [unsupported_step("camera", "twin",
+                                 f"the twin's virtual camera needs pacman — packages '{pkg}' is not supported yet (planned)")]
+    r = v["repo"]
+    kernel = "k=$(pacman -Qqo /usr/lib/modules/$(uname -r)/vmlinuz)"
+    return [
+        pkg_step("camera", "main", _pk(profile, "main"), ["ffmpeg"]),
+        pkg_step("camera", "twin", _pk(profile, "twin"), ["ffmpeg"]),
+        manual_step("camera.main.audio", "camera", "main", "the audio feature (the mic uses its SSH forward)",
+                    "Install the audio feature first: tool/twinpc install audio",
+                    check="systemctl --user is-enabled --quiet twin-audio.service"),
+        file_step("camera.twin.mic", "camera", "twin", "$HOME/.config/pipewire/pipewire.conf.d/main-pc-mic.conf",
+                  _read(repo, "twinpc/main-pc-mic.conf"),
+                  after=f"{USER_ENV} systemctl --user restart pipewire pipewire-pulse wireplumber"),
+        cmd_step("camera.twin.default-mic", "camera", "twin", "make 'Main PC microphone' the twin's default input",
+                 check=f"{USER_ENV} pactl get-default-source | grep -qx main-pc-mic",
+                 apply=f"{USER_ENV} for i in $(seq 20); do pactl list short sources | grep -q main-pc-mic && break;"
+                       " sleep 0.5; done; pactl set-default-source main-pc-mic"),
+        cmd_step("camera.twin.module", "camera", "twin", "install the virtual-camera kernel module (DKMS)",
+                 check=f'{kernel} && pacman -Q v4l2loopback-dkms "$k-headers" >/dev/null 2>&1',
+                 apply=f'{kernel} && pacman -S --needed --noconfirm v4l2loopback-dkms "$k-headers"',
+                 root=True, check_root=False),
+        file_step("camera.twin.options", "camera", "twin", "/etc/modprobe.d/twinpc-camera.conf", CAMERA_OPTIONS,
+                  root=True, describe="name the twin's webcam 'Main PC camera' (/dev/video9)"),
+        file_step("camera.twin.autoload", "camera", "twin", "/etc/modules-load.d/twinpc-camera.conf", "v4l2loopback\n",
+                  root=True, describe="load the virtual-camera module at boot"),
+        cmd_step("camera.twin.loaded", "camera", "twin", "load the virtual-camera module now",
+                 check="lsmod | grep -q '^v4l2loopback ' && [ -e /dev/video9 ]",
+                 apply="modprobe -r v4l2loopback 2>/dev/null; modprobe v4l2loopback", root=True, check_root=False),
+        cmd_step("camera.main.command", "camera", "main", "install twin-camera on this PC",
+                 check=f'[ "$(readlink ~/.local/bin/twin-camera)" = "{r}/clip/twin-camera" ]',
+                 apply=f'mkdir -p ~/.local/bin && ln -sf "{r}/clip/twin-camera" ~/.local/bin/twin-camera'),
+        file_step("camera.twin.command", "camera", "twin", "$HOME/.local/bin/twin-camera",
+                  _read(repo, "clip/twin-camera"), mode="755", describe="install twin-camera on the twin"),
+        file_step("camera.main.unit", "camera", "main", "$HOME/.config/systemd/user/twin-camera.service",
+                  repo_unit(repo, "main/twin-camera.service").replace(" --host twin\n", f" --host {v['host']}\n"),
+                  after="systemctl --user daemon-reload && systemctl --user try-restart twin-camera.service"),
+        unit_step("camera.main.service", "camera", "main", "twin-camera.service"),
+        cmd_step("camera.main.link", "camera", "main", "connect the camera service to the twin",
+                 check="~/.local/bin/twin-camera --selftest --fresh >/dev/null",
+                 apply="systemctl --user restart twin-camera.service && sleep 5"
+                       " && ~/.local/bin/twin-camera --selftest --fresh"),
+    ]
+
+
 def _desktop(profile, repo, v):
     steps = [
         pkg_step("desktop", "main", _pk(profile, "main"), ["remmina"]),
@@ -432,7 +482,8 @@ def _nic_fix(profile, repo, v):
 
 BUILDERS = {"connection": _connection, "cli": _cli, "gpu-stack": _gpu_stack, "routing": _routing,
             "mount": _mount, "power": _power, "unlock": _unlock, "kvm": _kvm, "clipboard": _clipboard,
-            "shelf": _shelf, "audio": _audio, "desktop": _desktop, "gui": _gui, "nic-fix": _nic_fix}
+            "shelf": _shelf, "audio": _audio, "camera": _camera, "desktop": _desktop, "gui": _gui,
+            "nic-fix": _nic_fix}
 FEATURES = list(BUILDERS)
 
 
