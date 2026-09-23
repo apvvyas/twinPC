@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""twin-clipd — share the clipboard between this PC and the twin (man twin: CLIPBOARD).
+
+Main PC (default): a user service. The GNOME extension talks to it on a unix socket, and it keeps
+`ssh <twin> twin-clipd --agent` running; clipboard changes travel both ways as frames.
+Twin (--agent): watches the clipboard with `wl-paste --watch` and sets it with `wl-copy`.
+
+A frame is one JSON header line — {"v":1,"kind":…,"size":n,"sha":"<sha256 of body>",…} — then n bytes.
+"""
+import hashlib
+import json
+import threading
+
+MB = 1024 * 1024
+LIMITS = {"text": 10 * MB, "image": 50 * MB, "files": 600 * MB, "data": 50 * MB, "set": 50 * MB}
+FILES_LIMIT = 500 * MB                  # the copied files themselves; the files frame allows tar overhead
+CONTROL = {"hello", "offer", "want"}    # no body
+CONTENT = ("text", "image", "files")    # what travels between the PCs
+TEXT_MIMES = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "STRING", "TEXT"]
+TEXT_MIME = TEXT_MIMES[0]
+URI_LIST = "text/uri-list"
+GNOME_FILES = "x-special/gnome-copied-files"
+BROWSER_HINTS = ("text/x-moz-url", "text/html")    # a copied link also offers text/uri-list
+SECRET_HINT = "x-kde-passwordManagerHint"
+
+
+class FrameError(Exception):
+    pass
+
+
+class TooBig(Exception):
+    """args[0]: the size in bytes."""
+
+
+def encode(kind, body=b"", **fields):
+    header = {"v": 1, "kind": kind, **fields, "size": len(body), "sha": hashlib.sha256(body).hexdigest()}
+    return json.dumps(header).encode() + b"\n" + body
+
+
+def read_frame(stream):
+    """The next (header, body) from a binary stream; None at a clean end of the stream."""
+    line = stream.readline(65536)
+    if not line:
+        return None
+    if not line.endswith(b"\n"):
+        raise FrameError("header line too long or cut off")
+    try:
+        h = json.loads(line)
+    except ValueError:
+        raise FrameError("header is not JSON") from None
+    if not isinstance(h, dict) or h.get("v") != 1:
+        raise FrameError(f"unknown frame version: {line[:80]!r}")
+    kind, size = h.get("kind"), h.get("size", 0)
+    if not isinstance(size, int) or size < 0:
+        raise FrameError("bad size")
+    limit = 0 if kind in CONTROL else LIMITS.get(kind)
+    if limit is None:
+        raise FrameError(f"unknown frame kind {kind!r}")
+    if size > limit:
+        raise FrameError(f"{kind} frame of {size} bytes is over its {limit}-byte limit")
+    body = bytearray()
+    while len(body) < size:
+        chunk = stream.read(size - len(body))
+        if not chunk:
+            raise FrameError("the stream ended inside a frame")
+        body += chunk
+    body = bytes(body)
+    if hashlib.sha256(body).hexdigest() != h.get("sha"):
+        raise FrameError("the body does not match its sha")
+    return h, body
+
+
+def text_choice(mimes):
+    for m in TEXT_MIMES:
+        if m in mimes:
+            return "text", m
+    return None
+
+
+def choose(mimes):
+    """(kind, mime) to read for a clipboard offering `mimes`; None: nothing useful, or a secret."""
+    if SECRET_HINT in mimes:
+        return None
+    link = any(m in mimes for m in BROWSER_HINTS)
+    if GNOME_FILES in mimes or (URI_LIST in mimes and not link):
+        return "files", URI_LIST if URI_LIST in mimes else GNOME_FILES
+    if "image/png" in mimes:
+        return "image", "image/png"
+    return text_choice(mimes)
+
+
+class Echo:
+    """The last clipboard content this side applied or sent, so a change it caused isn't sent back."""
+
+    def __init__(self):
+        self._key, self._lock = None, threading.Lock()
+
+    def mark(self, content):
+        with self._lock:
+            self._key = hashlib.sha256(content).hexdigest()
+
+    def is_new(self, content):
+        """True (and remember it) if `content` differs from the last one; False for an echo."""
+        key = hashlib.sha256(content).hexdigest()
+        with self._lock:
+            if key == self._key:
+                return False
+            self._key = key
+            return True
