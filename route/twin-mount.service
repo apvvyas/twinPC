@@ -1,0 +1,14 @@
+[Unit]
+Description=Mount the twin PC's ~/work at ~/twin (sshfs over the LAN cable)
+After=twin-link.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p %h/twin
+ExecStart=/usr/bin/sshfs -f -o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,idmap=user,follow_symlinks,ControlMaster=no,ControlPath=none twin:work %h/twin
+ExecStop=/bin/fusermount3 -u %h/twin
+Restart=on-failure
+RestartSec=20
+
+[Install]
+WantedBy=default.target

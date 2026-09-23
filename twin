@@ -389,6 +389,7 @@ else:
         echo "wake packet sent to twin"
         ;;
       stop)    # at this PC's shutdown: power twin off too, unless jobs are running on it
+        systemctl --user stop twin-mount.service 2>/dev/null || true   # don't leave a dead sshfs mount behind
         [[ $(stage) == up ]] || exit 0
         jobs=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOST" 'tmux ls -F "#S" 2>/dev/null' 2>/dev/null || true)
         if [[ -n $jobs ]]; then echo "twin left running — jobs active: $(echo $jobs)"; exit 0; fi
