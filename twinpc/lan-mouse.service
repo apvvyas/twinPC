@@ -4,7 +4,8 @@ PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
-ExecStart=/usr/bin/lan-mouse daemon
+# layer-shell capture: the input-capture portal path crashes Hyprland 0.56 (libeis assertion)
+ExecStart=/usr/bin/lan-mouse --capture-backend layer-shell daemon
 Restart=on-failure
 RestartSec=5
 
