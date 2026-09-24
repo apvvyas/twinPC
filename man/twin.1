@@ -245,8 +245,9 @@ switches back to the twin's own output;
 .B test
 plays a short tone on the twin;
 .B heal
-reconnects the tunnel if its stream here has lost its output (it is created
-"dont-reconnect", so it stays silent after e.g. Bluetooth disconnects or a reboot) \(em
+reconnects the tunnel if its stream here has lost its output or plays on another output than
+this PC's default (it is created "dont-reconnect" and can't be moved, so it would stay silent after
+e.g. Bluetooth reconnects, a reboot or switching outputs) \(em
 .I twin-kvm.timer
 runs it every 20 s.
 .SH CLIPBOARD

@@ -159,13 +159,16 @@ case "$cmd" in
         echo "forward (this PC): $(systemctl --user is-active twin-audio.service)"
         ssh "$HOST" "$AUDIO_ENV; echo \"twin default output: \$(pactl get-default-sink)\"" ;;
       heal)
-        # twin's tunnel stream is created "dont-reconnect": when the output it plays on disappears
-        # (Bluetooth off, reboot) it stays unlinked for good. Reconnecting the tunnel recreates it
-        # on this PC's current output. Run every 20 s by twin-kvm.timer.
-        if pactl list sink-inputs 2>/dev/null | awk '/^Sink Input #/{sink=""} /^\tSink:/{sink=$2}
-             /media.name = "Tunnel for / && sink=="4294967295"{found=1} END{exit !found}'; then
+        # twin's tunnel stream is created "dont-reconnect" and can't be moved: when the output it plays
+        # on disappears (Bluetooth off, reboot) it stays unlinked for good, and when you switch outputs
+        # (or Bluetooth comes back under a new id) it stays on the old one. Reconnecting the tunnel
+        # recreates it on this PC's current default output. Run every 20 s by twin-kvm.timer.
+        default_id=$(pactl list short sinks 2>/dev/null | awk -v d="$(pactl get-default-sink 2>/dev/null)" '$2 == d {print $1}')
+        on=$(pactl list sink-inputs 2>/dev/null | awk '/^Sink Input #/{sink=""} /^\tSink:/{sink=$2}
+               /media.name = "Tunnel for /{print sink; exit}')
+        if [[ -n $on && ( $on == 4294967295 || ( -n $default_id && $on != "$default_id" ) ) ]]; then
           systemctl --user restart twin-audio.service
-          echo "twin audio stream was unlinked — reconnected it to $(pactl get-default-sink)"
+          echo "twin audio stream wasn't on this PC's default output — reconnected it to $(pactl get-default-sink)"
         fi
         ;;
       test)
